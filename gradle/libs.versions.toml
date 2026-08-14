@@ -1,0 +1,15 @@
+[versions]
+assertj = "3.27.7"
+checkstyle = "13.4.0"
+jetty = "12.1.12"
+junit = "6.0.3"
+
+[libraries]
+assertj-core = { module = "org.assertj:assertj-core", version.ref = "assertj" }
+checkstyle = { module = "com.puppycrawl.tools:checkstyle", version.ref = "checkstyle" }
+jetty-proxy = { module = "org.eclipse.jetty:jetty-proxy", version.ref = "jetty" }
+jetty-server = { module = "org.eclipse.jetty:jetty-server", version.ref = "jetty" }
+jetty-unixdomain-server = { module = "org.eclipse.jetty:jetty-unixdomain-server", version.ref = "jetty" }
+junit-bom = { module = "org.junit:junit-bom", version.ref = "junit" }
+junit-jupiter = { module = "org.junit.jupiter:junit-jupiter" }
+junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher" }

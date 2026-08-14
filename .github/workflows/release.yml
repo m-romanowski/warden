@@ -1,0 +1,60 @@
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump-type:
+        description: "Version component to bump"
+        required: true
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+
+permissions:
+  contents: write
+
+jobs:
+  quality-gate:
+    uses: ./.github/workflows/check.yml
+
+  release:
+    needs: quality-gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "25"
+
+      - name: Configure release commit identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Bump version, commit, and tag
+        id: bump
+        run: |
+          version="$(./scripts/release.sh "${{ inputs.bump-type }}")"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Push release commit and tag
+        run: git push origin HEAD "v${{ steps.bump.outputs.version }}"
+
+      - name: Build release artifacts
+        run: ./gradlew build
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "v${{ steps.bump.outputs.version }}" \
+            --title "v${{ steps.bump.outputs.version }}" \
+            --generate-notes \
+            warden-api/build/libs/*.jar \
+            warden-core/build/libs/*.jar
