@@ -226,6 +226,9 @@ before you hit them yourself (all demonstrated in `examples/warden-example-simpl
   Ubuntu package archive to ship starting with 25.10/26.04, genuinely absent from 24.04
   LTS and earlier. CI targets `ubuntu-26.04` for this reason, there's no vendored
   fallback for older releases yet.
+- Verified only on Ubuntu/Debian-family with AppArmor active. Fedora is not supported
+  (SELinux, not AppArmor). Arch requires manually enabling the AppArmor kernel module -
+  see the [ArchWiki](https://wiki.archlinux.org/title/AppArmor).
 
 ## Modules
 
