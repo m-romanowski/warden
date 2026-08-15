@@ -100,8 +100,8 @@ sed -i.bak "s/^version=.*/version=$next_version/" "$properties_file"
 rm -f "$properties_file.bak"
 
 git -C "$repo_root" add gradle.properties
-git -C "$repo_root" commit -m "chore: release v$next_version"
-git -C "$repo_root" tag "v$next_version"
+git -C "$repo_root" commit -m "chore: release v$next_version" >&2
+git -C "$repo_root" tag "v$next_version" >&2
 
 echo "Released v$next_version (was $current_version)" >&2
 echo "$next_version"
