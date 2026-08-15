@@ -39,7 +39,10 @@ if [ "$ACTION" = "attach" ]; then
   echo "px $TARGET_PATH -> bwrap//&unpriv_bwrap//&$PROFILE_NAME," >> "$TMP_FILE"
 fi
 
+# cp preserves mktemp's own restrictive 0600 mode on first creation, leaving the file
+# unreadable to non-root readers unless corrected explicitly.
 cp "$TMP_FILE" "$OVERRIDE_FILE"
+chmod 0644 "$OVERRIDE_FILE"
 rm -f "$TMP_FILE"
 apparmor_parser -r "$VENDOR_FILE"
 MANAGEMENT_SCRIPT
