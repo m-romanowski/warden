@@ -221,6 +221,11 @@ before you hit them yourself (all demonstrated in `examples/warden-example-simpl
 - The per-session AppArmor stacking recipe has no known community precedent found during
   this project's own research. Expect to be on your own if it breaks against an untested
   kernel/AppArmor-parser combination.
+- Linux enforcement depends on Ubuntu's own `/etc/apparmor.d/bwrap-userns-restrict`
+  vendor profile already being present on the machine - confirmed against the real
+  Ubuntu package archive to ship starting with 25.10/26.04, genuinely absent from 24.04
+  LTS and earlier. CI targets `ubuntu-26.04` for this reason, there's no vendored
+  fallback for older releases yet.
 
 ## Modules
 

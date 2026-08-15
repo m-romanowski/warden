@@ -48,9 +48,9 @@ class ControlPlaneRelayLatencyBenchmarkTest {
     udsPath = benchDirectory.resolve("cp.sock");
     udsServer = ServerSocketChannel.open(StandardProtocolFamily.UNIX)
         .bind(UnixDomainSocketAddress.of(udsPath));
-      Thread udsServerThread = SandboxThreads.namedDaemonThread(
-          "warden-benchmark-uds-server", this::acceptAndEchoLoop
-      );
+    Thread udsServerThread = SandboxThreads.namedDaemonThread(
+        "warden-benchmark-uds-server", this::acceptAndEchoLoop
+    );
     udsServerThread.start();
     relay = ControlPlaneRelay.start(udsPath, _ -> {});
   }
