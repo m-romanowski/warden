@@ -47,7 +47,7 @@ jobs:
         run: git push origin HEAD "v${{ steps.bump.outputs.version }}"
 
       - name: Build release artifacts
-        run: ./gradlew build
+        run: ./gradlew assemble
 
       - name: Create GitHub Release
         env:
