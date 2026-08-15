@@ -18,24 +18,28 @@ final class AppArmorProfile implements AutoCloseable {
 
   private static final String PROFILE_NAME_PREFIX = "warden-sandbox-";
   private static final String PROFILE_FILE_SUFFIX = ".profile";
+  private static final String APPARMOR_PARSER_TOOL_NAME = "apparmor_parser";
 
   private final String name;
   private final Path profilePath;
+  private final Path apparmorParserExecutable;
   private boolean closed;
 
-  private AppArmorProfile(String name, Path profilePath) {
+  private AppArmorProfile(String name, Path profilePath, Path apparmorParserExecutable) {
     this.name = name;
     this.profilePath = profilePath;
+    this.apparmorParserExecutable = apparmorParserExecutable;
   }
 
-  static AppArmorProfile load(List<FilesystemRule> filesystemRules, Path bwrapSessionDirectory) {
+  static AppArmorProfile load(LinuxTools linuxTools, List<FilesystemRule> filesystemRules, Path bwrapSessionDirectory) {
+    Path apparmorParserExecutable = linuxTools.resolveExecutable(APPARMOR_PARSER_TOOL_NAME);
     String name = PROFILE_NAME_PREFIX + UUID.randomUUID()
         .toString()
         .replace("-", "");
     String profileText = AppArmorProfileGenerator.generate(name, filesystemRules, Optional.of(bwrapSessionDirectory));
     Path profilePath = writeProfileFile(name, profileText);
-    PrivilegedProcesses.run(List.of("apparmor_parser", "-r", profilePath.toString()));
-    return new AppArmorProfile(name, profilePath);
+    PrivilegedProcesses.run(List.of(apparmorParserExecutable.toString(), "-r", profilePath.toString()));
+    return new AppArmorProfile(name, profilePath, apparmorParserExecutable);
   }
 
   String name() {
@@ -49,7 +53,7 @@ final class AppArmorProfile implements AutoCloseable {
     }
     closed = true;
     try {
-      PrivilegedProcesses.run(List.of("apparmor_parser", "-R", profilePath.toString()));
+      PrivilegedProcesses.run(List.of(apparmorParserExecutable.toString(), "-R", profilePath.toString()));
     } finally {
       deleteQuietly();
     }

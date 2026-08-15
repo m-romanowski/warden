@@ -42,6 +42,7 @@ final class BwrapSandboxedProcessLauncher {
   private static final String HTTPS_PROXY_ENV = "HTTPS_PROXY";
   private static final String BWRAP_TOOL_NAME = "bwrap";
   private static final String SOCAT_TOOL_NAME = "socat";
+  private static final String APPARMOR_PARSER_TOOL_NAME = "apparmor_parser";
 
   private final LinuxTools linuxTools;
   private final Consumer<String> diagnostics;
@@ -60,6 +61,7 @@ final class BwrapSandboxedProcessLauncher {
   SandboxedProcess launch(SandboxLaunchRequest request) {
     Path bwrapExecutable = linuxTools.resolveExecutable(BWRAP_TOOL_NAME);
     linuxTools.resolveExecutable(SOCAT_TOOL_NAME);
+    linuxTools.resolveExecutable(APPARMOR_PARSER_TOOL_NAME);
 
     Path sessionDirectory = createSessionDirectory();
     Path uniqueTargetBinary;
@@ -72,7 +74,7 @@ final class BwrapSandboxedProcessLauncher {
 
     try {
       uniqueTargetBinary = createUniqueTargetBinary(sessionDirectory);
-      profile = AppArmorProfile.load(request.filesystemRules(), sessionDirectory);
+      profile = AppArmorProfile.load(linuxTools, request.filesystemRules(), sessionDirectory);
       attachment = AppArmorBwrapAttachment.attach(uniqueTargetBinary, profile.name());
 
       proxy = startProxy(request, sessionDirectory);
