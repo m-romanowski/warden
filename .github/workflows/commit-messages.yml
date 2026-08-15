@@ -1,0 +1,46 @@
+name: commit-messages
+
+on:
+  pull_request: {}
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate every new commit follows Conventional Commits
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            range="${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}"
+          elif [ "${{ github.event_name }}" = "push" ]; then
+            before="${{ github.event.before }}"
+            if [ "$before" = "0000000000000000000000000000000000000000" ]; then
+              range="$(git rev-list --max-parents=0 "${{ github.event.after }}")..${{ github.event.after }}"
+            else
+              range="$before..${{ github.event.after }}"
+            fi
+          else
+            range="HEAD~20..HEAD"
+          fi
+
+          failures=0
+          for sha in $(git log --no-merges --format=%H "$range"); do
+            if ! git log -1 --format=%B "$sha" | ./scripts/validate-commit-message.sh; then
+              echo "::error::Commit $sha ($(git log -1 --format=%s "$sha")) does not follow Conventional Commits"
+              failures=$((failures + 1))
+            fi
+          done
+
+          if [ "$failures" -gt 0 ]; then
+            exit 1
+          fi

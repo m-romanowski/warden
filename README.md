@@ -251,6 +251,17 @@ before you hit them yourself (all demonstrated in `examples/warden-example-simpl
 ./gradlew build
 ```
 
+## Contributing
+
+Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/)
+
+```
+git config core.hooksPath .githooks
+```
+
+Both the hook and the CI check run the same `scripts/validate-commit-message.sh`, so
+there's nothing to keep in sync between local and CI enforcement.
+
 ## License
 
 This project is licensed under the Apache-2.0 License.
