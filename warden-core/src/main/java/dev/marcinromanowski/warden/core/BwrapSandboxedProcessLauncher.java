@@ -1,5 +1,6 @@
 package dev.marcinromanowski.warden.core;
 
+import dev.marcinromanowski.warden.api.PathMount;
 import dev.marcinromanowski.warden.api.SandboxEstablishmentException;
 import dev.marcinromanowski.warden.api.SandboxLaunchRequest;
 import dev.marcinromanowski.warden.api.SandboxedProcess;
@@ -60,7 +61,7 @@ final class BwrapSandboxedProcessLauncher {
   @SuppressWarnings("PMD.CloseResource")
   SandboxedProcess launch(SandboxLaunchRequest request) {
     Path bwrapExecutable = linuxTools.resolveExecutable(BWRAP_TOOL_NAME);
-    linuxTools.resolveExecutable(SOCAT_TOOL_NAME);
+    Path socatExecutable = linuxTools.resolveExecutable(SOCAT_TOOL_NAME);
     linuxTools.resolveExecutable(APPARMOR_PARSER_TOOL_NAME);
 
     Path sessionDirectory = createSessionDirectory();
@@ -74,7 +75,7 @@ final class BwrapSandboxedProcessLauncher {
 
     try {
       uniqueTargetBinary = createUniqueTargetBinary(sessionDirectory);
-      profile = AppArmorProfile.load(linuxTools, request.filesystemRules(), sessionDirectory);
+      profile = AppArmorProfile.load(linuxTools, request.filesystemRules(), sessionDirectory, socatExecutable);
       attachment = AppArmorBwrapAttachment.attach(uniqueTargetBinary, profile.name());
 
       proxy = startProxy(request, sessionDirectory);
@@ -83,8 +84,8 @@ final class BwrapSandboxedProcessLauncher {
           ? Optional.of(startControlPlaneRelay(sessionDirectory))
           : Optional.empty();
 
-      writeBridgeScript(sessionDirectory, controlPlanePort);
-      List<String> argv = buildArgv(bwrapExecutable, sessionDirectory, request.sandboxRoot(), uniqueTargetBinary, request.command());
+      writeBridgeScript(sessionDirectory, socatExecutable, controlPlanePort);
+      List<String> argv = buildArgv(bwrapExecutable, socatExecutable, sessionDirectory, request, uniqueTargetBinary);
 
       process = startProcess(request, argv);
       diagnostics.accept("sandboxed process started pid=" + process.pid());
@@ -198,8 +199,12 @@ final class BwrapSandboxedProcessLauncher {
     }
   }
 
-  private static void writeBridgeScript(Path sessionDirectory, Optional<Integer> controlPlanePort) {
-    String script = BwrapNetworkBridgeScript.generate(IN_SANDBOX_BRIDGE_DIRECTORY, controlPlanePort);
+  private static void writeBridgeScript(
+      Path sessionDirectory,
+      Path socatExecutable,
+      Optional<Integer> controlPlanePort
+  ) {
+    String script = BwrapNetworkBridgeScript.generate(IN_SANDBOX_BRIDGE_DIRECTORY, socatExecutable, controlPlanePort);
     try {
       Files.writeString(sessionDirectory.resolve(BRIDGE_SCRIPT_FILE_NAME), script);
     } catch (IOException e) {
@@ -209,20 +214,27 @@ final class BwrapSandboxedProcessLauncher {
 
   private static List<String> buildArgv(
       Path bwrapExecutable,
+      Path socatExecutable,
       Path sessionDirectory,
-      Path sandboxRoot,
-      Path uniqueTargetBinary,
-      List<String> originalCommand
+      SandboxLaunchRequest request,
+      Path uniqueTargetBinary
   ) {
     Path inSandboxScriptPath = IN_SANDBOX_BRIDGE_DIRECTORY.resolve(BRIDGE_SCRIPT_FILE_NAME);
     List<String> wrappedCommand = new ArrayList<>();
     wrappedCommand.add(uniqueTargetBinary.toString());
     wrappedCommand.add(inSandboxScriptPath.toString());
-    wrappedCommand.addAll(originalCommand);
+    wrappedCommand.addAll(request.command());
 
     BwrapBridgeMount bridgeMount = new BwrapBridgeMount(sessionDirectory, IN_SANDBOX_BRIDGE_DIRECTORY);
-    List<String> generated =
-        BwrapArgvGenerator.generate(sandboxRoot, uniqueTargetBinary, bridgeMount, wrappedCommand);
+    List<PathMount> mounts = new ArrayList<>(request.pathMounts());
+    mounts.add(PathMount.readOnly(socatExecutable));
+    List<String> generated = BwrapArgvGenerator.generate(
+        request.sandboxRoot(),
+        List.copyOf(mounts),
+        uniqueTargetBinary,
+        bridgeMount,
+        wrappedCommand
+    );
 
     List<String> argv = new ArrayList<>(generated);
     argv.set(0, bwrapExecutable.toString());

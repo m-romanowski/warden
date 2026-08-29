@@ -1,5 +1,7 @@
 package dev.marcinromanowski.warden.core;
 
+import dev.marcinromanowski.warden.api.MountAccess;
+import dev.marcinromanowski.warden.api.PathMount;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -8,21 +10,23 @@ import java.util.List;
 // here - that is AppArmor's job, evaluated lazily by the kernel against the profile
 // AppArmorBwrapAttachment loads separately. bwrap's only remaining jobs are: (1) network
 // namespace isolation (--unshare-net, a genuine kernel boundary AppArmor does not provide), and
-// (2) making the sandbox root, the network bridge, and the unique per-session target binary
-// AppArmorBwrapAttachment's px stacking rule matches, reachable at all. A single broad bind of the
-// sandbox root is deliberate, not an oversight - the fine-grained ALLOW/DENY carve-outs within it
-// are enforced by the AppArmor profile the sandboxed process runs under, not by which paths bwrap
-// chooses to mount.
+// (2) making paths reachable at all - the sandbox root, the network bridge, the unique
+// per-session target binary AppArmorBwrapAttachment's px stacking rule matches, and every
+// caller-declared PathMount. A single broad bind of the sandbox root is deliberate, not an
+// oversight - the fine-grained ALLOW/DENY carve-outs within it are enforced by the AppArmor
+// profile the sandboxed process runs under, not by which paths bwrap chooses to mount.
 final class BwrapArgvGenerator {
 
   private static final List<String> BOOTSTRAP_READ_ONLY_PATHS =
       List.of("/bin", "/usr/bin", "/usr/lib", "/usr/share", "/lib", "/lib64", "/etc");
+  private static final List<Path> RESERVED_PATHS = reservedPaths();
 
   private BwrapArgvGenerator() {
   }
 
   static List<String> generate(
       Path sandboxRoot,
+      List<PathMount> pathMounts,
       Path uniqueTargetBinary,
       BwrapBridgeMount bridgeMount,
       List<String> command
@@ -31,6 +35,7 @@ final class BwrapArgvGenerator {
     argv.add("bwrap");
     appendNamespaceAndBootstrap(argv);
     appendSandboxRootBind(argv, sandboxRoot);
+    appendDeclaredMounts(argv, pathMounts);
     appendTargetBinaryBind(argv, uniqueTargetBinary);
     appendBridgeMount(argv, bridgeMount);
     argv.add("--die-with-parent");
@@ -61,6 +66,46 @@ final class BwrapArgvGenerator {
     argv.add("--bind");
     argv.add(required.toString());
     argv.add(required.toString());
+  }
+
+  private static void appendDeclaredMounts(List<String> argv, List<PathMount> pathMounts) {
+    for (PathMount mount : Preconditions.nonNull(pathMounts, "pathMounts")) {
+      rejectIfItShadowsThisGeneratorsOwnSetup(mount.path());
+      String path = mount.path()
+          .toString();
+      argv.add(bindFlag(mount.access()));
+      argv.add(path);
+      argv.add(path);
+    }
+  }
+
+  private static void rejectIfItShadowsThisGeneratorsOwnSetup(Path mountPath) {
+    for (Path reserved : RESERVED_PATHS) {
+      if (reserved.startsWith(mountPath)) {
+        throw new IllegalArgumentException(
+            "path mount " + mountPath + " would replace the sandbox's own " + reserved
+        );
+      }
+    }
+  }
+
+  private static List<Path> reservedPaths() {
+    List<Path> reserved = new ArrayList<>();
+    reserved.add(Path.of("/"));
+    reserved.add(Path.of("/proc"));
+    reserved.add(Path.of("/dev"));
+    reserved.add(Path.of("/tmp"));
+    for (String bootstrapPath : BOOTSTRAP_READ_ONLY_PATHS) {
+      reserved.add(Path.of(bootstrapPath));
+    }
+    return List.copyOf(reserved);
+  }
+
+  private static String bindFlag(MountAccess access) {
+    return switch (access) {
+      case READ_ONLY -> "--ro-bind";
+      case READ_WRITE -> "--bind";
+    };
   }
 
   private static void appendTargetBinaryBind(List<String> argv, Path uniqueTargetBinary) {

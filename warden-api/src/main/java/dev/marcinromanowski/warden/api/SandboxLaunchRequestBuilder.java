@@ -18,6 +18,7 @@ public final class SandboxLaunchRequestBuilder {
   private File logOutputFile;
   private final List<FilesystemRule> filesystemRules = new ArrayList<>();
   private final List<NetworkRule> networkRules = new ArrayList<>();
+  private final List<PathMount> pathMounts = new ArrayList<>();
   private Path sandboxRootPath;
   private URI controlPlaneHintUri;
   private NetworkAskHandler askHandler;
@@ -87,6 +88,28 @@ public final class SandboxLaunchRequestBuilder {
     return this;
   }
 
+  /**
+   * Declares a read-only mount making the given host path reachable inside the sandbox. What may
+   * then be read under it is still decided by the filesystem rules.
+   */
+  public SandboxLaunchRequestBuilder mountReadOnly(Path path) {
+    return pathMount(PathMount.readOnly(path));
+  }
+
+  /**
+   * Declares a read-write mount making the given host path reachable inside the sandbox. What may
+   * then be read or written under it is still decided by the filesystem rules.
+   */
+  public SandboxLaunchRequestBuilder mountReadWrite(Path path) {
+    return pathMount(PathMount.readWrite(path));
+  }
+
+  /** Adds a mount. Mounts are applied in the order they were added. */
+  public SandboxLaunchRequestBuilder pathMount(PathMount mount) {
+    this.pathMounts.add(Preconditions.nonNull(mount, "mount"));
+    return this;
+  }
+
   /** Adds an {@code ALLOW} network rule for the given host, any port. */
   public SandboxLaunchRequestBuilder allowNetwork(String hostPattern, String reason) {
     return networkRule(NetworkRule.allowHost(hostPattern, reason));
@@ -108,6 +131,8 @@ public final class SandboxLaunchRequestBuilder {
    *
    * @throws IllegalStateException if {@link #logFile(File)} or {@link #sandboxRoot(Path)} was
    *     never called
+   * @throws IllegalArgumentException if a declared mount duplicates another one, or is the
+   *     sandbox root or an ancestor of it
    */
   public SandboxLaunchRequest build() {
     if (logOutputFile == null) {
@@ -124,6 +149,7 @@ public final class SandboxLaunchRequestBuilder {
         filesystemRules,
         networkRules,
         sandboxRootPath,
+        pathMounts,
         Optional.ofNullable(controlPlaneHintUri),
         Optional.ofNullable(askHandler)
     );

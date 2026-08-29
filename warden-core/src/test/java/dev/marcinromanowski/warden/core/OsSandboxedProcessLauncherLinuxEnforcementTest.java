@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import dev.marcinromanowski.warden.api.AccessKind;
 import dev.marcinromanowski.warden.api.FilesystemRule;
+import dev.marcinromanowski.warden.api.PathMount;
 import dev.marcinromanowski.warden.api.SandboxLaunchRequest;
 import dev.marcinromanowski.warden.api.SandboxedProcess;
 import java.io.IOException;
@@ -97,6 +98,101 @@ class OsSandboxedProcessLauncherLinuxEnforcementTest {
               + " SandboxProxyServer instead, which itself denies an unmatched host by default - so"
               + " this must fail either way, never succeed: %s", output)
           .doesNotContain("CURL_EXIT:0");
+    }
+  }
+
+  @Test
+  void pathOutsideTheSandboxRootIsAbsentWhenNoMountDeclaresIt(
+      @TempDir Path tempDirParameter
+  ) throws IOException {
+    Path root = tempDirParameter.toRealPath();
+    Path workspaceRoot = Files.createDirectory(root.resolve("workspace"));
+    Path outside = Files.createDirectory(root.resolve("outside"));
+    Path data = outside.resolve("data.txt");
+    Files.writeString(data, "OUTSIDE-CONTENT");
+    Path logFile = Files.createTempFile("warden-mount-absent-", ".log");
+
+    SandboxLaunchRequest request = SandboxLaunchRequest.command("/bin/sh", "-c", "cat " + data + " 2>&1")
+        .sandboxRoot(workspaceRoot)
+        .logFile(logFile.toFile())
+        .filesystemRule(FilesystemRule.allowReadWrite(outside + "/**", "outside allowed by rule alone"))
+        .build();
+
+    assertThat(runToCompletion(request, logFile))
+        .as("an allow rule cannot make an unmounted path exist inside the sandbox")
+        .doesNotContain("OUTSIDE-CONTENT");
+  }
+
+  @Test
+  void declaredReadWriteMountMakesAnOutsidePathReachable(
+      @TempDir Path tempDirParameter
+  ) throws IOException {
+    Path root = tempDirParameter.toRealPath();
+    Path workspaceRoot = Files.createDirectory(root.resolve("workspace"));
+    Path outside = Files.createDirectory(root.resolve("outside"));
+    Path data = outside.resolve("data.txt");
+    Files.writeString(data, "OUTSIDE-CONTENT");
+    Path written = outside.resolve("written.txt");
+    Path logFile = Files.createTempFile("warden-mount-readwrite-", ".log");
+
+    SandboxLaunchRequest request = SandboxLaunchRequest.command(
+        "/bin/sh", "-c",
+        "cat " + data + " 2>&1; echo " + SECTION_SEPARATOR + "; echo WRITTEN > " + written + " 2>&1 && cat " + written
+    )
+        .sandboxRoot(workspaceRoot)
+        .logFile(logFile.toFile())
+        .filesystemRule(FilesystemRule.allowReadWrite(outside + "/**", "outside allowed"))
+        .pathMount(PathMount.readWrite(outside))
+        .build();
+
+    String output = runToCompletion(request, logFile);
+
+    assertThat(output)
+        .contains("OUTSIDE-CONTENT")
+        .contains("WRITTEN");
+  }
+
+  @Test
+  void declaredReadOnlyMountRefusesWritesEvenWhenTheRulesAllowThem(
+      @TempDir Path tempDirParameter
+  ) throws IOException {
+    Path root = tempDirParameter.toRealPath();
+    Path workspaceRoot = Files.createDirectory(root.resolve("workspace"));
+    Path outside = Files.createDirectory(root.resolve("outside"));
+    Path data = outside.resolve("data.txt");
+    Files.writeString(data, "OUTSIDE-CONTENT");
+    Path logFile = Files.createTempFile("warden-mount-readonly-", ".log");
+
+    SandboxLaunchRequest request = SandboxLaunchRequest.command(
+        "/bin/sh", "-c",
+        "cat " + data + " 2>&1; echo " + SECTION_SEPARATOR + "; echo WRITTEN > " + outside.resolve("written.txt") + " 2>&1"
+    )
+        .sandboxRoot(workspaceRoot)
+        .logFile(logFile.toFile())
+        .filesystemRule(FilesystemRule.allowReadWrite(outside + "/**", "rules allow, the mount does not"))
+        .pathMount(PathMount.readOnly(outside))
+        .build();
+
+    String output = runToCompletion(request, logFile);
+    String[] sections = output.split(SECTION_SEPARATOR, 2);
+
+    assertThat(sections[0])
+        .contains("OUTSIDE-CONTENT");
+    assertThat(sections[1])
+        .doesNotContain("WRITTEN");
+  }
+
+  private static String runToCompletion(SandboxLaunchRequest request, Path logFile) throws IOException {
+    try (
+        SandboxedProcess process = new OsSandboxedProcessLauncher()
+            .launch(request)
+    ) {
+      boolean finished = process.waitFor(LAUNCH_TIMEOUT);
+      String output = Files.readString(logFile);
+      assertThat(finished)
+          .as("sandboxed process did not terminate in time, output so far: %s", output)
+          .isTrue();
+      return output;
     }
   }
 }

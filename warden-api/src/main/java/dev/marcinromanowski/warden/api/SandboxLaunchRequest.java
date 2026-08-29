@@ -4,9 +4,11 @@ import java.io.File;
 import java.net.URI;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * A fully-specified request to launch a command inside an OS-level sandbox. Build one with
@@ -20,6 +22,10 @@ import java.util.Optional;
  * @param filesystemRules filesystem allow/deny rules, in priority order (first entry wins)
  * @param networkRules network egress allow/deny rules, in priority order (first entry wins)
  * @param sandboxRoot the workspace root the sandbox is scoped around
+ * @param pathMounts host paths made reachable inside the sandbox alongside the sandbox root, in
+ *     the order they were declared - a mount nested inside the sandbox root is allowed even though
+ *     the sandbox root already makes it reachable, it is redundant rather than wrong, while a
+ *     mount equal to or above the sandbox root is rejected because it would shadow the root itself
  * @param controlPlaneHint a hint URI for a control-plane endpoint the child process exposes, if
  *     any - see {@link SandboxedProcess#controlPlaneUri()} for why the resolved URI can differ
  * @param networkAskHandler resolves an unmatched network-egress request live, if supplied
@@ -32,6 +38,7 @@ public record SandboxLaunchRequest(
     List<FilesystemRule> filesystemRules,
     List<NetworkRule> networkRules,
     Path sandboxRoot,
+    List<PathMount> pathMounts,
     Optional<URI> controlPlaneHint,
     Optional<NetworkAskHandler> networkAskHandler
 ) {
@@ -49,6 +56,7 @@ public record SandboxLaunchRequest(
     sandboxRoot = Preconditions.nonNull(sandboxRoot, "sandboxRoot")
         .toAbsolutePath()
         .normalize();
+    pathMounts = validatedMounts(pathMounts, sandboxRoot);
     controlPlaneHint = Preconditions.nonNull(controlPlaneHint, "controlPlaneHint");
     networkAskHandler = Preconditions.nonNull(networkAskHandler, "networkAskHandler");
   }
@@ -67,6 +75,21 @@ public record SandboxLaunchRequest(
   /** Starts building a request for the given argv. */
   public static SandboxLaunchRequestBuilder command(List<String> argv) {
     return new SandboxLaunchRequestBuilder(argv);
+  }
+
+  private static List<PathMount> validatedMounts(List<PathMount> pathMounts, Path sandboxRoot) {
+    List<PathMount> mounts = List.copyOf(Preconditions.nonNull(pathMounts, "pathMounts"));
+    Set<Path> declaredPaths = new LinkedHashSet<>();
+    for (PathMount mount : mounts) {
+      Path path = mount.path();
+      if (sandboxRoot.startsWith(path)) {
+        throw new IllegalArgumentException("path mount " + path + " would shadow the sandbox root " + sandboxRoot);
+      }
+      if (!declaredPaths.add(path)) {
+        throw new IllegalArgumentException("duplicate path mount " + path);
+      }
+    }
+    return mounts;
   }
 
   private static Map<String, String> normalizedEnvironment(Map<String, String> environmentVariables) {

@@ -100,8 +100,22 @@ final class AppArmorProfileGenerator {
   // separately below) - so the in-sandbox socat's own connect() to the bridge's proxy.sock is
   // checked against this rule, not that one, and needs write access to succeed.
   static String generate(String profileName, List<FilesystemRule> filesystemRules, Optional<Path> bwrapSessionDirectory) {
+    return generate(profileName, filesystemRules, bwrapSessionDirectory, Optional.empty());
+  }
+
+  // helperExecutable, when present, is a binary this sandbox's own bridge script runs by absolute
+  // path. The bootstrap allowances above cover the system locations a distribution would install it
+  // in, and nothing else - so a helper resolved from anywhere the embedder chose needs its own
+  // clause here, or the mount that makes it reachable produces "Permission denied" instead. "rix"
+  // rather than "mrix" for the same reason the bootstrap uses it: the helper is executed, not
+  // mapped, and it stays under this profile.
+  static String generate(
+      String profileName,
+      List<FilesystemRule> filesystemRules,
+      Optional<Path> bwrapSessionDirectory,
+      Optional<Path> helperExecutable
+  ) {
     String requiredName = Preconditions.nonBlank(profileName, "profileName");
-    List<FilesystemRule> requiredRules = List.copyOf(Preconditions.nonNull(filesystemRules, "filesystemRules"));
     Optional<Path> requiredSessionDirectory = Preconditions.nonNull(bwrapSessionDirectory, "bwrapSessionDirectory");
     StringBuilder profile = new StringBuilder();
     profile.append("#include <tunables/global>\n\n")
@@ -114,10 +128,17 @@ final class AppArmorProfileGenerator {
             .append(directory)
             .append("/** mrwix,\n")
     );
+    Preconditions.nonNull(helperExecutable, "helperExecutable")
+        .ifPresent(
+            executable -> profile.append("  ")
+                .append(executable)
+                .append(" rix,\n")
+        );
     // Higher-priority literal ALLOW patterns seen so far, in the caller's own priority order -
     // used to carve exceptions out of a later, lower-priority DENY glob that would otherwise
     // silently re-cover them (see AppArmorDenyGlobExclusion's own header for the full "why" -
     // AppArmor's set-subtraction model has no native priority/specificity concept at all).
+    List<FilesystemRule> requiredRules = List.copyOf(Preconditions.nonNull(filesystemRules, "filesystemRules"));
     List<String> higherPriorityLiteralAllows = new ArrayList<>();
     for (FilesystemRule rule : requiredRules) {
       appendRuleClause(profile, rule, higherPriorityLiteralAllows);

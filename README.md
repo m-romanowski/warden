@@ -201,6 +201,16 @@ before you hit them yourself (all demonstrated in `examples/warden-example-simpl
   inherits your JVM's own current directory, which almost certainly has no rule
   covering it. A log/output file living outside your granted paths will fail to write
   to for the same reason.
+- **A path outside the sandbox root needs a mount, not just a rule.** On Linux the sandbox
+  starts from an empty filesystem, so a path that was never mounted does not exist inside
+  it - the process gets an ephemeral directory that vanishes on exit, and a rule covering
+  that path has nothing to govern. Declare it with `mountReadOnly(Path)` /
+  `mountReadWrite(Path)`, which binds the host path at the same absolute path inside the
+  sandbox. Typical case: a persistent profile, cache or state directory living elsewhere
+  on the host. A mount only makes the path reachable, access is still decided by the
+  filesystem rules, and a mount whose source is missing fails the launch rather than
+  silently producing an empty directory. macOS has no mount namespace, every host path is
+  already reachable there, so mounts are a no-op on that platform.
 - **Rule order is priority order** - the first rule in your list wins over a later,
   overlapping one. A narrow `deny` meant to carve an exception out of a broader `allow`
   must be listed *before* that `allow`.
@@ -233,8 +243,8 @@ before you hit them yourself (all demonstrated in `examples/warden-example-simpl
 ## Modules
 
 - `warden-api` - the public contract: `SandboxedProcessLauncher`, `SandboxedProcess`,
-  `SandboxLaunchRequest`, `FilesystemRule`, `NetworkRule`, `NetworkAskHandler`. No
-  platform-specific code.
+  `SandboxLaunchRequest`, `FilesystemRule`, `NetworkRule`, `PathMount`,
+  `NetworkAskHandler`. No platform-specific code.
 - `warden-core` - the implementation: `OsSandboxedProcessLauncher` (the entry point,
   dispatches to Seatbelt on macOS / AppArmor+bwrap on Linux), profile generation, the
   loopback forward proxy, network-namespace bridging.

@@ -31,12 +31,22 @@ final class AppArmorProfile implements AutoCloseable {
     this.apparmorParserExecutable = apparmorParserExecutable;
   }
 
-  static AppArmorProfile load(LinuxTools linuxTools, List<FilesystemRule> filesystemRules, Path bwrapSessionDirectory) {
+  static AppArmorProfile load(
+      LinuxTools linuxTools,
+      List<FilesystemRule> filesystemRules,
+      Path bwrapSessionDirectory,
+      Path helperExecutable
+  ) {
     Path apparmorParserExecutable = linuxTools.resolveExecutable(APPARMOR_PARSER_TOOL_NAME);
     String name = PROFILE_NAME_PREFIX + UUID.randomUUID()
         .toString()
         .replace("-", "");
-    String profileText = AppArmorProfileGenerator.generate(name, filesystemRules, Optional.of(bwrapSessionDirectory));
+    String profileText = AppArmorProfileGenerator.generate(
+        name,
+        filesystemRules,
+        Optional.of(bwrapSessionDirectory),
+        Optional.of(helperExecutable)
+    );
     Path profilePath = writeProfileFile(name, profileText);
     PrivilegedProcesses.run(List.of(apparmorParserExecutable.toString(), "-r", profilePath.toString()));
     return new AppArmorProfile(name, profilePath, apparmorParserExecutable);

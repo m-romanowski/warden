@@ -9,6 +9,11 @@ import java.util.Optional;
 // namespace boundaries), optionally a second socat exposing the sandboxed process's own
 // control-plane port back out the same way, waits for both to be ready, then execs the real
 // command. Pure string generation - no filesystem/process side effects here.
+//
+// socat is named by the absolute path the caller's resolver produced, never by bare name. Inside the
+// sandbox PATH resolves against whatever the bootstrap binds happen to expose, so a bare name would
+// silently pick a different socat than the one the embedder resolved and vouched for, or find none
+// at all on a host that has no distribution socat installed.
 final class BwrapNetworkBridgeScript {
 
   static final int EGRESS_BRIDGE_PORT = 18080;
@@ -21,19 +26,23 @@ final class BwrapNetworkBridgeScript {
   private BwrapNetworkBridgeScript() {
   }
 
-  static String generate(Path inSandboxBridgeDirectory, Optional<Integer> controlPlanePort) {
+  static String generate(Path inSandboxBridgeDirectory, Path socatExecutable, Optional<Integer> controlPlanePort) {
+    String socat = Preconditions.nonNull(socatExecutable, "socatExecutable")
+        .toString();
     Path proxySocketPath = inSandboxBridgeDirectory.resolve(PROXY_SOCKET_FILE_NAME);
     Path controlSocketPath = inSandboxBridgeDirectory.resolve(CONTROL_SOCKET_FILE_NAME);
     StringBuilder script = new StringBuilder();
     script.append("#!/bin/sh\n")
         .append("set -e\n\n")
-        .append("socat TCP-LISTEN:")
+        .append(socat)
+        .append(" TCP-LISTEN:")
         .append(EGRESS_BRIDGE_PORT)
         .append(",bind=127.0.0.1,fork UNIX-CONNECT:")
         .append(proxySocketPath)
         .append(" &\n");
     controlPlanePort.ifPresent(
-        port -> script.append("socat UNIX-LISTEN:")
+        port -> script.append(socat)
+            .append(" UNIX-LISTEN:")
             .append(controlSocketPath)
             .append(",fork TCP:127.0.0.1:")
             .append(port)
@@ -45,7 +54,9 @@ final class BwrapNetworkBridgeScript {
         .append("while [ \"$i\" -lt ")
         .append(READINESS_POLL_ATTEMPTS)
         .append(" ]; do\n")
-        .append("  if socat -u OPEN:/dev/null TCP:127.0.0.1:")
+        .append("  if ")
+        .append(socat)
+        .append(" -u OPEN:/dev/null TCP:127.0.0.1:")
         .append(EGRESS_BRIDGE_PORT)
         .append(" 2>/dev/null");
     controlPlanePort.ifPresent(port -> script.append(" && [ -S ")
