@@ -13,14 +13,38 @@ class AppArmorGlobTranslatorTest {
         .isEqualTo("/workspace/**");
   }
 
-  // AppArmor requires every pattern to be an absolute path - a relative-looking "anywhere in the
-  // tree" pattern (no leading "/", meaningful only as a java.nio.file glob against an
-  // already-absolute candidate) needs one prepended, confirmed empirically on a real kernel that
-  // this preserves the intended "anywhere, including at the filesystem root" meaning exactly.
   @Test
   void prependsLeadingSlashToRelativeAnywherePattern() {
+    // AppArmor requires every pattern to be an absolute path - a relative-looking "anywhere in the
+    // tree" pattern (no leading "/", meaningful only as a java.nio.file glob against an
+    // already-absolute candidate) needs one prepended. It does not preserve the "at the filesystem
+    // root" end of that meaning. AppArmor's "**" does not match the empty string between two slashes.
     assertThat(AppArmorGlobTranslator.toAppArmorPattern("**/*.pem"))
         .isEqualTo("/**/*.pem");
+  }
+
+  @Test
+  void namesTheRootLevelReadingALeadingRecursiveGlobDoesNotCover() {
+    assertThat(AppArmorGlobTranslator.zeroSegmentForms("/**/.env"))
+        .containsExactly("/.env");
+  }
+
+  @Test
+  void namesEveryDepthARepeatedLeadingRecursiveGlobDoesNotCover() {
+    assertThat(AppArmorGlobTranslator.zeroSegmentForms("/**/**/.env"))
+        .containsExactly("/**/.env", "/.env");
+  }
+
+  @Test
+  void namesNoRootLevelReadingForAPatternWithoutALeadingRecursiveGlob() {
+    assertThat(AppArmorGlobTranslator.zeroSegmentForms("/workspace/**/.env"))
+        .isEmpty();
+  }
+
+  @Test
+  void refusesTheRootLevelReadingThatWouldNameTheFilesystemRootItself() {
+    assertThat(AppArmorGlobTranslator.zeroSegmentForms("/**/"))
+        .isEmpty();
   }
 
   @Test
@@ -52,6 +76,25 @@ class AppArmorGlobTranslatorTest {
   @Test
   void rejectsLineBreakAsRuleSyntaxInjectionRisk() {
     assertThatThrownBy(() -> AppArmorGlobTranslator.toAppArmorPattern("**/evil\n/** rwx,"))
+        .isInstanceOf(IllegalArgumentException.class);
+  }
+
+  @Test
+  void rejectsBackslashBecauseAppArmorReadsItAsAnEscape() {
+    // '\' is a legal character in a Linux filename and callers interpolate real paths into patterns,
+    // but AppArmor reads it as an escape, so a rule set scoped to a directory named "work\space" is
+    // parsed as naming "workspace" - measured on a real kernel to grant read-write on that other
+    // directory and to refuse every write inside the intended one. A component ending in '\' makes
+    // apparmor_parser reject the whole profile, which is a failed launch rather than a rejected rule.
+    // SeatbeltGlobTranslator already refused it, so accepting it here made one rule set mean two
+    // different things.
+    assertThatThrownBy(() -> AppArmorGlobTranslator.toAppArmorPattern("/home/user/work\\space/**"))
+        .isInstanceOf(IllegalArgumentException.class);
+  }
+
+  @Test
+  void rejectsTrailingBackslashThatWouldMakeTheParserRefuseTheWholeProfile() {
+    assertThatThrownBy(() -> AppArmorGlobTranslator.toAppArmorPattern("/home/user/trailing\\"))
         .isInstanceOf(IllegalArgumentException.class);
   }
 }

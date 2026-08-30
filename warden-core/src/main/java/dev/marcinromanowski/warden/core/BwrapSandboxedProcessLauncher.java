@@ -33,10 +33,10 @@ import java.util.function.Consumer;
 final class BwrapSandboxedProcessLauncher {
 
   private static final Path IN_SANDBOX_BRIDGE_DIRECTORY = Path.of(AppArmorProfileGenerator.BWRAP_BRIDGE_DIRECTORY);
-  private static final String BRIDGE_SCRIPT_FILE_NAME = "bridge-entrypoint.sh";
-  private static final String PROXY_SOCKET_FILE_NAME = "proxy.sock";
-  private static final String CONTROL_SOCKET_FILE_NAME = "control.sock";
-  private static final String TARGET_BINARY_FILE_NAME = "target-shell";
+  private static final String BRIDGE_SCRIPT_FILE_NAME = BwrapSessionPaths.BRIDGE_SCRIPT_FILE_NAME;
+  private static final String PROXY_SOCKET_FILE_NAME = BwrapSessionPaths.PROXY_SOCKET_FILE_NAME;
+  private static final String CONTROL_SOCKET_FILE_NAME = BwrapSessionPaths.CONTROL_SOCKET_FILE_NAME;
+  private static final String TARGET_BINARY_FILE_NAME = BwrapSessionPaths.TARGET_BINARY_FILE_NAME;
   private static final String SESSION_DIRECTORY_PREFIX = "warden-sandbox-session-";
   private static final String SOURCE_SHELL_EXECUTABLE = "/bin/sh";
   private static final String HTTP_PROXY_ENV = "HTTP_PROXY";
@@ -75,11 +75,16 @@ final class BwrapSandboxedProcessLauncher {
 
     try {
       uniqueTargetBinary = createUniqueTargetBinary(sessionDirectory);
-      profile = AppArmorProfile.load(linuxTools, request.filesystemRules(), sessionDirectory, socatExecutable);
+      Optional<Integer> controlPlanePort = controlPlanePort(request);
+      profile = AppArmorProfile.load(
+          linuxTools,
+          request.filesystemRules(),
+          new BwrapSessionPaths(sessionDirectory, controlPlanePort.isPresent()),
+          socatExecutable
+      );
       attachment = AppArmorBwrapAttachment.attach(uniqueTargetBinary, profile.name());
 
       proxy = startProxy(request, sessionDirectory);
-      Optional<Integer> controlPlanePort = controlPlanePort(request);
       controlPlaneRelay = controlPlanePort.isPresent()
           ? Optional.of(startControlPlaneRelay(sessionDirectory))
           : Optional.empty();

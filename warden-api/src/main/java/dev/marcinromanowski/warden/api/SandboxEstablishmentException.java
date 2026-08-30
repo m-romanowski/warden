@@ -8,7 +8,7 @@ import java.io.Serial;
  * mechanism itself. warden never falls back to running a process unsandboxed, this exception is
  * the fail-closed signal instead.
  */
-public final class SandboxEstablishmentException extends RuntimeException {
+public class SandboxEstablishmentException extends RuntimeException {
 
   @Serial
   private static final long serialVersionUID = 1L;

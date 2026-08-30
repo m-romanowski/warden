@@ -34,7 +34,7 @@ final class AppArmorProfile implements AutoCloseable {
   static AppArmorProfile load(
       LinuxTools linuxTools,
       List<FilesystemRule> filesystemRules,
-      Path bwrapSessionDirectory,
+      BwrapSessionPaths sessionPaths,
       Path helperExecutable
   ) {
     Path apparmorParserExecutable = linuxTools.resolveExecutable(APPARMOR_PARSER_TOOL_NAME);
@@ -44,7 +44,7 @@ final class AppArmorProfile implements AutoCloseable {
     String profileText = AppArmorProfileGenerator.generate(
         name,
         filesystemRules,
-        Optional.of(bwrapSessionDirectory),
+        Optional.of(sessionPaths),
         Optional.of(helperExecutable)
     );
     Path profilePath = writeProfileFile(name, profileText);

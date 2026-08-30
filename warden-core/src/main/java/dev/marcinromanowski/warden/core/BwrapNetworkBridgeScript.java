@@ -18,8 +18,8 @@ final class BwrapNetworkBridgeScript {
 
   static final int EGRESS_BRIDGE_PORT = 18080;
 
-  private static final String PROXY_SOCKET_FILE_NAME = "proxy.sock";
-  private static final String CONTROL_SOCKET_FILE_NAME = "control.sock";
+  private static final String PROXY_SOCKET_FILE_NAME = BwrapSessionPaths.PROXY_SOCKET_FILE_NAME;
+  private static final String CONTROL_SOCKET_FILE_NAME = BwrapSessionPaths.CONTROL_SOCKET_FILE_NAME;
   private static final int READINESS_POLL_ATTEMPTS = 40;
   private static final double READINESS_POLL_INTERVAL_SECONDS = 0.25;
 

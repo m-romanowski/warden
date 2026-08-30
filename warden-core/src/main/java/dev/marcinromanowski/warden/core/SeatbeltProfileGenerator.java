@@ -3,8 +3,10 @@ package dev.marcinromanowski.warden.core;
 import dev.marcinromanowski.warden.api.AccessKind;
 import dev.marcinromanowski.warden.api.Decision;
 import dev.marcinromanowski.warden.api.FilesystemRule;
+import dev.marcinromanowski.warden.api.SandboxRuleRejectedException;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 
 // Generates a macOS Seatbelt (SBPL) profile from an already priority-ordered (first-match-wins)
 // rule list.
@@ -56,6 +58,7 @@ final class SeatbeltProfileGenerator {
 
   static String generate(List<FilesystemRule> filesystemRules, int proxyPort, Optional<Integer> listenPort) {
     List<FilesystemRule> requiredRules = List.copyOf(Preconditions.nonNull(filesystemRules, "filesystemRules"));
+    requiredRules.forEach(SeatbeltProfileGenerator::rejectDeniedExecute);
     StringBuilder profile = new StringBuilder(PROFILE_HEADER);
     profile.append('\n')
         .append(BOOTSTRAP_ALLOWANCES);
@@ -102,14 +105,70 @@ final class SeatbeltProfileGenerator {
   // a coarser concept with no distinct SBPL equivalent. Seatbelt only cares about the actual
   // file-read/file-write syscalls, so an EXTERNAL_DIRECTORY rule folds into the read-clause
   // emission alongside READ.
+  //
+  // EXECUTE folds into the same read clause on an ALLOW. SBPL has no per-path execute operation:
+  // which programs may run at all is the blanket (allow process-exec) in the bootstrap above, and
+  // what remains per-path is being able to read the image. So an allowed EXECUTE has to reach
+  // file-read* or the binary it names stays unrunnable on macOS while running on Linux. On a DENY it
+  // is refused outright instead - see rejectDeniedExecute.
+  //
+  // LOCK contributes no clause of its own, and that is the whole of Seatbelt's story for it: macOS
+  // mediates flock/fcntl locking through the descriptor a process already opened, never through a
+  // path, so there is no operation to allow and none to deny. A caller that needs a lock granted or
+  // refused as a distinct capability gets that on Linux only.
   private static boolean appliesToKind(FilesystemRule rule, AccessKind kind) {
     if (rule.accessKinds()
         .contains(kind)) {
       return true;
     }
     return kind == AccessKind.READ
-        && rule.accessKinds()
-            .contains(AccessKind.EXTERNAL_DIRECTORY);
+        && (rule.accessKinds()
+            .contains(AccessKind.EXTERNAL_DIRECTORY)
+            || rule.accessKinds()
+                .contains(AccessKind.EXECUTE));
+  }
+
+  // A DENY naming EXECUTE and nothing readable is refused here rather than translated, and this is
+  // the one rule shape whose meaning macOS cannot approximate in either direction. A deny that names
+  // READ alongside EXECUTE is not refused: the read clause it emits is what the caller asked for.
+  //
+  // Folding it into the read deny, which this generator used to do, is not "stricter than asked" in
+  // any harmless sense. A rule set of "deny EXECUTE <tree>/**" over "allow READ WRITE <tree>/**"
+  // emits the deny last, last-clause-wins puts it on top, and the confined process then cannot read
+  // a single file in that tree. The documented example "deny EXECUTE **/*.sh" means "no shell script
+  // may run" on Linux and "no shell script anywhere is readable" on macOS - and a rule set is authored
+  // once for both. Dropping the rule instead would make it enforce nothing on macOS while enforcing
+  // something on Linux, silently, which for a security control is worse still.
+  //
+  // What a caller can do instead depends on what the path holds, and the two cases differ - both
+  // measured with a real sandbox-exec, execing from a process the profile already covers.
+  // Denying file-read* on a shell script does stop it running (exit 126, "Operation not permitted"),
+  // because the interpreter has to read it. Denying file-read* on a Mach-O binary does not stop it
+  // running at all: the kernel's own image load is not mediated by file-read*, and the same binary
+  // ran with its read denied. So "deny READ and EXECUTE" is a real cross-platform spelling for a
+  // script (which is what the ".sh" shape callers write is), and there is no spelling at all for a
+  // native binary - on macOS, per-path execute is simply not a thing this sandbox can refuse.
+  private static void rejectDeniedExecute(FilesystemRule rule) {
+    Set<AccessKind> kinds = rule.accessKinds();
+    boolean deniesExecuteAlone = !effectiveDecisionIsAllow(rule.decision())
+        && kinds.contains(AccessKind.EXECUTE)
+        && !kinds.contains(AccessKind.READ)
+        && !kinds.contains(AccessKind.EXTERNAL_DIRECTORY);
+    if (!deniesExecuteAlone) {
+      return;
+    }
+    throw new SandboxRuleRejectedException(
+        "Seatbelt cannot express a DENY on EXECUTE alone - SBPL has no per-path execute operation,"
+            + " so the only clause it could emit is a read deny, which would make the path"
+            + " unreadable as well. Add READ to this rule: denying the read is a real refusal for a"
+            + " script on macOS and Linux both, because the interpreter has to read it. For a native"
+            + " binary macOS cannot refuse per-path execute at all, and there is no rule spelling"
+            + " that changes that - so a rule set that has to run on macOS should express the intent"
+            + " another way, by not granting the path in the first place or by not mounting it."
+            + " Offending rule: pattern=" + rule.targetPattern()
+            + ", kinds=" + kinds + ", reason=" + rule.reason(),
+        rule.targetPattern()
+    );
   }
 
   // The OS sandbox has no synchronous approval channel at the syscall boundary - ASK folds to

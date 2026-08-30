@@ -6,6 +6,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import dev.marcinromanowski.warden.api.AccessKind;
 import dev.marcinromanowski.warden.api.Decision;
 import dev.marcinromanowski.warden.api.FilesystemRule;
+import dev.marcinromanowski.warden.api.SandboxEstablishmentException;
+import dev.marcinromanowski.warden.api.SandboxRuleRejectedException;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -108,6 +110,70 @@ class SeatbeltProfileGeneratorTest {
 
     assertThat(profile)
         .contains(allowClause(FILE_READ_OPERATION, "/some/external/root/**"));
+  }
+
+  @Test
+  void executeAloneFoldsIntoReadClauseEmissionBecauseSbplHasNoPerPathExecuteOperation() {
+    FilesystemRule executableOnly = rule(Set.of(AccessKind.EXECUTE), "/tools/backend", Decision.ALLOW);
+
+    String profile = generate(List.of(executableOnly));
+
+    assertThat(profile)
+        .contains(allowClause(FILE_READ_OPERATION, "/tools/backend"));
+  }
+
+  @Test
+  void refusesADenyOnExecuteBecauseTheOnlyClauseSbplCouldEmitWouldDenyTheReadToo() {
+    List<FilesystemRule> rules = List.of(rule(Set.of(AccessKind.EXECUTE), "/tools/backend", Decision.DENY));
+
+    assertThatThrownBy(() -> generate(rules))
+        .as("a typed refusal, so an embedder's own establishment handling catches it rather than"
+            + " letting a bare IllegalArgumentException escape to a generic catch")
+        .isInstanceOf(SandboxRuleRejectedException.class)
+        .isInstanceOf(SandboxEstablishmentException.class)
+        .hasMessageContaining("/tools/backend")
+        .as("the advice has to be something the author can do, and neither WorkspaceAccessRule nor"
+            + " FilesystemRule carries a platform, so it cannot be \"keep it out of the macOS set\"")
+        .hasMessageContaining("Add READ to this rule");
+  }
+
+  @Test
+  void acceptsADenyOnReadAndExecuteTogetherAndEmitsTheReadDeny() {
+    FilesystemRule unreadable = rule(Set.of(AccessKind.READ, AccessKind.EXECUTE), "/tools/**/*.sh", Decision.DENY);
+
+    String profile = generate(List.of(unreadable));
+
+    assertThat(profile)
+        .contains(denyClause(FILE_READ_OPERATION, "/tools/**/*.sh"));
+  }
+
+  @Test
+  void lockOnDenyContributesNoClauseForTheSameReasonAnAllowDoesNot() {
+    FilesystemRule unlockable = rule(Set.of(AccessKind.LOCK), "/state/**", Decision.DENY);
+    FilesystemRule readOnlyDeny = rule(Set.of(AccessKind.READ), "/state/**", Decision.DENY);
+
+    String withLockRule = generate(List.of(unlockable, readOnlyDeny));
+
+    assertThat(withLockRule)
+        .as("the read deny beside it is what proves the comparison is not between two empty profiles")
+        .contains(denyClause(FILE_READ_OPERATION, "/state/**"))
+        .isEqualTo(generate(List.of(readOnlyDeny)));
+  }
+
+  @Test
+  void lockContributesNoClauseBecauseMacOsMediatesLockingThroughTheDescriptor() {
+    FilesystemRule lockable = rule(
+        Set.of(AccessKind.READ, AccessKind.WRITE, AccessKind.LOCK), "/state/**", Decision.ALLOW
+    );
+    FilesystemRule sameWithoutLock = rule(
+        Set.of(AccessKind.READ, AccessKind.WRITE), "/state/**", Decision.ALLOW
+    );
+
+    String withLockRule = generate(List.of(lockable));
+
+    assertThat(withLockRule)
+        .contains(allowClause(FILE_READ_OPERATION, "/state/**"))
+        .isEqualTo(generate(List.of(sameWithoutLock)));
   }
 
   @Test

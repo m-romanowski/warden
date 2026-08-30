@@ -16,13 +16,14 @@ import java.util.Optional;
 // shape this class exists to support.
 //
 // This class computes a *replacement* set of deny clauses that together match "the original deny
-// glob, minus one specific literal path" - restoring the intended precedence without relying on
-// any AppArmor priority mechanism that doesn't exist. Scoped deliberately narrow, not a general
-// glob-difference solver: the deny pattern's directory portion (everything up to and including
-// the last "/") must be either the recursive-anywhere prefix "/**/", or a literal (no-wildcard)
-// directory that matches the excluded path's own directory exactly. Its filename portion (after
-// that "/") must be a *single*-wildcard pattern ("prefix*" or "*suffix") or no wildcard at all.
-// Any other shape (a wildcard elsewhere in the directory portion, multiple wildcards in the
+// glob, minus one specific literal path" - restoring the intended precedence by rewriting the
+// pattern rather than by ranking the rules. apparmor.d(5) documents a "priority=" rule qualifier, present
+// in the parser from 4.1 onward, and AppArmorProfileGenerator now uses it for warden's own reserved paths.
+// Scoped deliberately narrow, not a general glob-difference solver: the deny pattern's directory
+// portion (everything up to and including the last "/") must be either the recursive-anywhere prefix
+// "/**/", or a literal (no-wildcard) directory that matches the excluded path's own directory exactly. Its
+// filename portion (after that "/") must be a *single*-wildcard pattern ("prefix*" or "*suffix") or no
+// wildcard at all. Any other shape (a wildcard elsewhere in the directory portion, multiple wildcards in the
 // filename, "**" inside the filename itself, unsafe characters in the excluded suffix) falls back
 // to Optional.empty() - the caller then leaves the original deny clause untouched, which is still
 // correct and secure, just not able to express this specific carve-out (the pre-existing,

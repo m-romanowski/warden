@@ -111,7 +111,38 @@ macOS's own SBPL (confirmed separately to be genuinely last-clause-wins, order-s
 the kind of assumption that's easy to get backwards without testing against the
 real kernel. `AppArmorDenyGlobExclusion` rewrites a deny glob into narrower clauses that
 structurally exclude one specific higher-priority allow path, restoring the intended
-precedence without relying on any priority mechanism AppArmor doesn't have.
+precedence by narrowing the deny rather than by ranking the two rules. AppArmor does have
+a `priority=` rule qualifier (documented in `apparmor.d(5)`, in the parser from 4.1
+onward), and a higher-priority allow does beat an overlapping deny. warden does not use it anywhere, for
+a caller's rules or for its own. A generated profile is an  **addition** to whatever policy
+is already in force, never a silent override of part of it, and `priority=` exists precisely to override.
+
+**A caller's deny that would break establishment is refused by name, not out-ranked.**
+warden reaches a handful of its own paths during a launch: the per-session target binary,
+the proxy socket, and the bridge entrypoint and sockets under `/tmp/warden-sandbox-bridge`.
+A broad caller deny can cover them by accident - `**/tmp/**` is a shape a credential
+blacklist author writes, and it covers `/tmp/**` under the `PathMatcher` semantics rule
+patterns are authored against.
+
+**warden's own clauses grant single files, not the trees around them.** Under the real
+bwrap mount shape only the target binary is bind-mounted at its own host path, so the
+session directory around it is an ordinary writable tmpfs directory inside the sandbox, and
+`/tmp/warden-sandbox-bridge` is a bind of the host session directory. Both used to be
+granted tree-wide, and both were reachable: measured under a real bwrap launch, the
+confined process created arbitrary files under the bridge alias, and executed a binary it
+staged in the session tree. The profile now names `<session>/target-shell mrix`,
+`<session>/proxy.sock w`, `<bridge>/bridge-entrypoint.sh r`, `<bridge>/proxy.sock rw` and
+the two control-socket spellings when a control plane was asked for - and nothing wider.
+
+**An enforcing profile must permit the confined process to signal itself.** A generated
+profile carries `signal peer=<profile>` in both the bare and `bwrap//&unpriv_bwrap//&`
+stacked spellings, and nothing wider.
+
+**`EXTERNAL_DIRECTORY` grants traversal, not a listing.** On Linux a rule naming
+`EXTERNAL_DIRECTORY` without `READ` emits the base clause and no trailing-slash companion,
+so the directory can be resolved through and stat'ed while `ls` on it is refused. `READ` is
+what asks for a listing, and a rule naming it still gets the companion. The macOS mapping is
+unchanged: SBPL folds `EXTERNAL_DIRECTORY` into `file-read*` as it always has.
 
 **Network isolation uses kernel network namespaces, not shared-namespace proxying.**
 Considered and rejected: running the sandboxed process without `--unshare-net` and

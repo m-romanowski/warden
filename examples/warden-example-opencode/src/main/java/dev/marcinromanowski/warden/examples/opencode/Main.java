@@ -45,6 +45,17 @@ public final class Main {
         // before the broader allow they're meant to carve exceptions out of.
         .filesystemRule(FilesystemRule.denyRead("**/.env*", "example: never let a credential file be read"))
         .filesystemRule(FilesystemRule.denyRead("**/id_rsa*", "example: never let an SSH private key be read"))
+        // Execute is a grant of its own, and the standard system locations the sandbox bootstraps
+        // are the only ones a binary runs from without it - so an executable resolved from anywhere
+        // the embedder chose needs this rule or it fails to start at all.
+        .filesystemRule(
+            FilesystemRule.allow(
+                opencodeExecutable.toString(),
+                "example: the backend binary this launch runs",
+                AccessKind.READ,
+                AccessKind.EXECUTE
+            )
+        )
         .filesystemRule(FilesystemRule.allow(workspace.toString(), "example: workspace root itself, for traversal", AccessKind.READ))
         .filesystemRule(FilesystemRule.allowReadWrite(workspace + "/**", "example: the workspace OpenCode operates on"))
         .networkRule(NetworkRule.allowHost("api.example.com", "example: an LLM provider host"))

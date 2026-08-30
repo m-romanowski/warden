@@ -8,6 +8,8 @@ import dev.marcinromanowski.warden.api.FilesystemRule;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermissions;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
@@ -25,6 +27,13 @@ import org.junit.jupiter.api.io.TempDir;
 class AppArmorProfileGeneratorEnforcementTest {
 
   private static final String CAT_EXECUTABLE = "/bin/cat";
+  private static final String LIST_EXECUTABLE = "/bin/ls";
+  private static final String MAKE_DIRECTORY_EXECUTABLE = "/bin/mkdir";
+  private static final String TRUE_EXECUTABLE = "/bin/true";
+  private static final String FLOCK_EXECUTABLE = "/usr/bin/flock";
+  private static final String SHELL_EXECUTABLE = "/bin/sh";
+  private static final String MOVE_EXECUTABLE = "/bin/mv";
+  private static final String PROCESS_DIRECTORY = "/proc";
 
   @Test
   void denyCarveOutInsideBroaderAllowActuallyDeniesTheRead(@TempDir Path tempDirParameter) throws IOException {
@@ -196,6 +205,310 @@ class AppArmorProfileGeneratorEnforcementTest {
       assertThat(unconfinedResult.output())
           .contains("TOP-SECRET");
     }
+  }
+
+  @Test
+  void executeRunsTheBinaryTheBootstrapLocationsDoNotCover(
+      @TempDir Path tempDirParameter
+  ) throws IOException {
+    Path tempDir = tempDirParameter.toRealPath();
+    // Copied under its own name, not renamed: the system binary this borrows is a multicall
+    // executable that dispatches on argv[0] and refuses to run under any other name, which would
+    // read as an exec failure without being one.
+    Path toolDirectory = Files.createDirectory(tempDir.resolve("tools"));
+    Path tool = Files.copy(Path.of(CAT_EXECUTABLE), toolDirectory.resolve("cat"));
+    Files.setPosixFilePermissions(tool, PosixFilePermissions.fromString("rwxr-xr-x"));
+    Path readable = tempDir.resolve("readable.txt");
+    Files.writeString(readable, "RAN-THE-TOOL");
+    List<FilesystemRule> readOnly = List.of(allowRule(tempDir + "/**"));
+    List<FilesystemRule> readAndExecute = List.of(
+        rule(Set.of(AccessKind.READ, AccessKind.EXECUTE), tempDir + "/**", Decision.ALLOW)
+    );
+
+    try (
+        LoadedAppArmorProfile withoutExecute = LoadedAppArmorProfile.load(readOnly);
+        LoadedAppArmorProfile withExecute = LoadedAppArmorProfile.load(readAndExecute)
+    ) {
+      // Run through a shell rather than as the profile's own first command. aa-exec applies the
+      // profile on the exec it performs itself, so that exec is authorised by whatever confined the
+      // caller and never by the profile under test - only an exec performed by an already-confined
+      // process is mediated, which is also how the sandbox reaches a backend binary for real.
+      String command = "exec " + tool + " " + readable;
+      SandboxExecResult refused = withoutExecute.run(SHELL_EXECUTABLE, "-c", command);
+      SandboxExecResult permitted = withExecute.run(SHELL_EXECUTABLE, "-c", command);
+
+      assertThat(refused.exitCode())
+          .as("a readable-but-not-executable binary must not run: %s", refused.output())
+          .isNotZero();
+      assertThat(refused.output())
+          .doesNotContain("RAN-THE-TOOL");
+      assertThat(permitted.exitCode())
+          .as("granting execute must make the same binary runnable: %s", permitted.output())
+          .isZero();
+      assertThat(permitted.output())
+          .contains("RAN-THE-TOOL");
+    }
+  }
+
+  @Test
+  void lockTakesTheFileLockThatWriteAccessAloneRefuses(
+      @TempDir Path tempDirParameter
+  ) throws IOException {
+    Path tempDir = tempDirParameter.toRealPath();
+    Path lockable = tempDir.resolve("state.db");
+    Files.writeString(lockable, "");
+    List<FilesystemRule> writeOnly = List.of(
+        rule(Set.of(AccessKind.READ, AccessKind.WRITE), tempDir + "/**", Decision.ALLOW)
+    );
+    List<FilesystemRule> writeAndLock = List.of(
+        rule(Set.of(AccessKind.READ, AccessKind.WRITE, AccessKind.LOCK), tempDir + "/**", Decision.ALLOW)
+    );
+
+    try (
+        LoadedAppArmorProfile withoutLock = LoadedAppArmorProfile.load(writeOnly);
+        LoadedAppArmorProfile withLock = LoadedAppArmorProfile.load(writeAndLock)
+    ) {
+      SandboxExecResult refused = withoutLock.run(FLOCK_EXECUTABLE, "-n", "-x", lockable.toString(), TRUE_EXECUTABLE);
+      SandboxExecResult permitted = withLock.run(FLOCK_EXECUTABLE, "-n", "-x", lockable.toString(), TRUE_EXECUTABLE);
+
+      assertThat(refused.exitCode())
+          .as("a writable file must not be lockable without an explicit lock grant: %s", refused.output())
+          .isNotZero();
+      assertThat(permitted.exitCode())
+          .as("granting lock must make the same file lockable: %s", permitted.output())
+          .isZero();
+    }
+  }
+
+  @Test
+  void directoryRuleListsTheDirectoryWithoutOpeningWhatIsInside(
+      @TempDir Path tempDirParameter
+  ) throws IOException {
+    Path tempDir = tempDirParameter.toRealPath();
+    Path inside = tempDir.resolve("inside.txt");
+    Files.writeString(inside, "NOT-GRANTED");
+    List<FilesystemRule> rules = List.of(allowRule(tempDir.toString()));
+
+    try (LoadedAppArmorProfile profile = LoadedAppArmorProfile.load(rules)) {
+      SandboxExecResult listing = profile.run(LIST_EXECUTABLE, tempDir.toString());
+      SandboxExecResult read = profile.run(CAT_EXECUTABLE, inside.toString());
+
+      assertThat(listing.exitCode())
+          .as("a rule naming the directory must permit listing it: %s", listing.output())
+          .isZero();
+      assertThat(listing.output())
+          .contains("inside.txt");
+      assertThat(read.exitCode())
+          .as("naming the directory must not grant reads of what is inside it")
+          .isNotZero();
+    }
+  }
+
+  @Test
+  void denyNamingTheDirectoryAlsoRefusesCreatingIt(
+      @TempDir Path tempDirParameter
+  ) throws IOException {
+    Path tempDir = tempDirParameter.toRealPath();
+    String blocked = tempDir.resolve("blocked")
+        .toString();
+    List<FilesystemRule> writableTree = List.of(
+        rule(Set.of(AccessKind.READ, AccessKind.WRITE), tempDir.toString(), Decision.ALLOW),
+        rule(Set.of(AccessKind.READ, AccessKind.WRITE), tempDir + "/**", Decision.ALLOW)
+    );
+    List<FilesystemRule> rules = withDenyOfDirectory(blocked, writableTree);
+
+    try (
+        LoadedAppArmorProfile control = LoadedAppArmorProfile.load(writableTree);
+        LoadedAppArmorProfile profile = LoadedAppArmorProfile.load(rules)
+    ) {
+      SandboxExecResult permitted = control.run(MAKE_DIRECTORY_EXECUTABLE, blocked);
+      assertThat(permitted.exitCode())
+          .as("without the deny the same command must succeed, or the check below proves nothing: %s",
+              permitted.output())
+          .isZero();
+      Files.delete(Path.of(blocked));
+
+      SandboxExecResult created = profile.run(MAKE_DIRECTORY_EXECUTABLE, blocked);
+
+      assertThat(created.exitCode())
+          .as("creating a denied directory must fail: %s", created.output())
+          .isNotZero();
+      assertThat(Path.of(blocked))
+          .doesNotExist();
+    }
+  }
+
+  @Test
+  void denyNamingTheDirectoryAlsoRefusesRenamingStagedContentOntoIt(
+      @TempDir Path tempDirParameter
+  ) throws IOException {
+    Path tempDir = tempDirParameter.toRealPath();
+    Path staging = Files.createDirectory(tempDir.resolve("staging"));
+    Files.writeString(staging.resolve("plugin.js"), "INJECTED");
+    String blocked = tempDir.resolve("plugin")
+        .toString();
+    List<FilesystemRule> writableTree = List.of(
+        rule(Set.of(AccessKind.READ, AccessKind.WRITE), tempDir.toString(), Decision.ALLOW),
+        rule(Set.of(AccessKind.READ, AccessKind.WRITE), tempDir + "/**", Decision.ALLOW)
+    );
+    List<FilesystemRule> rules = withDenyOfDirectory(blocked, writableTree);
+
+    try (
+        LoadedAppArmorProfile control = LoadedAppArmorProfile.load(writableTree);
+        LoadedAppArmorProfile profile = LoadedAppArmorProfile.load(rules)
+    ) {
+      SandboxExecResult permitted = control.run(MOVE_EXECUTABLE, staging.toString(), blocked);
+      assertThat(permitted.exitCode())
+          .as("without the deny the same rename must succeed, or the check below proves nothing: %s",
+              permitted.output())
+          .isZero();
+      Files.move(Path.of(blocked), staging);
+
+      SandboxExecResult renamed = profile.run(MOVE_EXECUTABLE, staging.toString(), blocked);
+
+      assertThat(renamed.exitCode())
+          .as("renaming a staged directory onto a denied name must fail: %s", renamed.output())
+          .isNotZero();
+      assertThat(Path.of(blocked)
+          .resolve("plugin.js"))
+          .doesNotExist();
+    }
+  }
+
+  @Test
+  void allowNamingADirectoryGrantsListingItWithoutGrantingItsRelocation(
+      @TempDir Path tempDirParameter
+  ) throws IOException {
+    Path tempDir = tempDirParameter.toRealPath();
+    Path granted = Files.createDirectory(tempDir.resolve("granted"));
+    Files.writeString(granted.resolve("inside.txt"), "CONTENT");
+    Path elsewhere = Files.createDirectory(tempDir.resolve("elsewhere"));
+    List<FilesystemRule> rules = List.of(
+        rule(Set.of(AccessKind.READ, AccessKind.WRITE), granted.toString(), Decision.ALLOW),
+        rule(Set.of(AccessKind.READ, AccessKind.WRITE), granted + "/**", Decision.ALLOW),
+        rule(Set.of(AccessKind.READ, AccessKind.WRITE), elsewhere.toString(), Decision.ALLOW),
+        rule(Set.of(AccessKind.READ, AccessKind.WRITE), elsewhere + "/**", Decision.ALLOW)
+    );
+
+    try (LoadedAppArmorProfile profile = LoadedAppArmorProfile.load(rules)) {
+      SandboxExecResult relocated = profile.run(MOVE_EXECUTABLE, granted.toString(), elsewhere + "/stolen");
+      SandboxExecResult listing = profile.run(LIST_EXECUTABLE, granted.toString());
+      SandboxExecResult insideWork = profile.run(
+          SHELL_EXECUTABLE, "-c",
+          "mkdir " + granted + "/sub && touch " + granted + "/file && mv " + granted + "/file "
+              + granted + "/renamed && rmdir " + granted + "/sub"
+      );
+
+      assertThat(relocated.exitCode())
+          .as("renaming the granted directory itself must fail: %s", relocated.output())
+          .isNotZero();
+      assertThat(granted)
+          .exists();
+      assertThat(listing.exitCode())
+          .as("listing the granted directory must still work - that is what the companion is for: %s",
+              listing.output())
+          .isZero();
+      assertThat(listing.output())
+          .contains("inside.txt");
+      assertThat(insideWork.exitCode())
+          .as("mkdir, touch, rename and rmdir inside the granted tree must all still work: %s",
+              insideWork.output())
+          .isZero();
+    }
+  }
+
+  @Test
+  void externalDirectoryPermitsTraversalWhileRefusingTheListing(
+      @TempDir Path tempDirParameter
+  ) throws IOException {
+    Path root = tempDirParameter.toRealPath();
+    Path traversed = Files.createDirectory(root.resolve("traversed"));
+    Path listed = Files.createDirectory(root.resolve("listed"));
+    Files.writeString(traversed.resolve("inside.txt"), "REACHED-THROUGH");
+    Files.writeString(listed.resolve("inside.txt"), "ALSO-REACHED");
+    List<FilesystemRule> rules = List.of(
+        rule(Set.of(AccessKind.EXTERNAL_DIRECTORY), traversed.toString(), Decision.ALLOW),
+        rule(Set.of(AccessKind.READ), traversed + "/**", Decision.ALLOW),
+        rule(Set.of(AccessKind.READ), listed.toString(), Decision.ALLOW)
+    );
+
+    try (LoadedAppArmorProfile profile = LoadedAppArmorProfile.load(rules)) {
+      SandboxExecResult readThrough = profile.run(CAT_EXECUTABLE, traversed.resolve("inside.txt").toString());
+      SandboxExecResult listTraversed = profile.run(LIST_EXECUTABLE, traversed.toString());
+      SandboxExecResult listRead = profile.run(LIST_EXECUTABLE, listed.toString());
+
+      assertThat(readThrough.output())
+          .as("a file below the directory must still be reachable through it")
+          .contains("REACHED-THROUGH");
+      assertThat(listTraversed.exitCode())
+          .as("EXTERNAL_DIRECTORY alone must not list the directory: %s", listTraversed.output())
+          .isNotZero();
+      assertThat(listRead.exitCode())
+          .as("a rule that names READ must still list it: %s", listRead.output())
+          .isZero();
+    }
+  }
+
+  @Test
+  void denyingExecuteRefusesRunningWhatTheBroaderAllowStillMakesReadable(
+      @TempDir Path tempDirParameter
+  ) throws IOException {
+    Path tempDir = tempDirParameter.toRealPath();
+    Path toolDirectory = Files.createDirectory(tempDir.resolve("tools"));
+    Path tool = Files.copy(Path.of(CAT_EXECUTABLE), toolDirectory.resolve("cat"));
+    Files.setPosixFilePermissions(tool, PosixFilePermissions.fromString("rwxr-xr-x"));
+    Path readable = tempDir.resolve("readable.txt");
+    Files.writeString(readable, "RAN-THE-TOOL");
+    List<FilesystemRule> rules = List.of(
+        rule(Set.of(AccessKind.EXECUTE), tool.toString(), Decision.DENY),
+        rule(Set.of(AccessKind.READ, AccessKind.EXECUTE), tempDir + "/**", Decision.ALLOW)
+    );
+
+    try (LoadedAppArmorProfile profile = LoadedAppArmorProfile.load(rules)) {
+      SandboxExecResult refused = profile.run(SHELL_EXECUTABLE, "-c", "exec " + tool + " " + readable);
+      SandboxExecResult stillReadable = profile.run(CAT_EXECUTABLE, readable.toString());
+
+      assertThat(refused.exitCode())
+          .as("a denied-execute binary must not run: %s", refused.output())
+          .isNotZero();
+      assertThat(refused.output())
+          .doesNotContain("RAN-THE-TOOL");
+      assertThat(stillReadable.exitCode())
+          .as("denying execute must not take away the read the same tree grants: %s", stillReadable.output())
+          .isZero();
+    }
+  }
+
+  @Test
+  void denyGlobMatchingAnywhereAlsoRefusesTheSameNameAtTheFilesystemRoot() throws IOException {
+    List<FilesystemRule> withoutDeny = List.of(allowRule(PROCESS_DIRECTORY));
+    List<FilesystemRule> withDeny = List.of(
+        denyRule("**/" + PROCESS_DIRECTORY.substring(1)),
+        allowRule(PROCESS_DIRECTORY)
+    );
+
+    try (
+        LoadedAppArmorProfile permitted = LoadedAppArmorProfile.load(withoutDeny);
+        LoadedAppArmorProfile denied = LoadedAppArmorProfile.load(withDeny)
+    ) {
+      SandboxExecResult allowedListing = permitted.run(LIST_EXECUTABLE, PROCESS_DIRECTORY);
+      SandboxExecResult refusedListing = denied.run(LIST_EXECUTABLE, PROCESS_DIRECTORY);
+
+      assertThat(allowedListing.exitCode())
+          .as("the allow alone must list it, or the deny below proves nothing: %s", allowedListing.output())
+          .isZero();
+      assertThat(refusedListing.exitCode())
+          .as("a deny written to match anywhere must also refuse the root-level name: %s", refusedListing.output())
+          .isNotZero();
+    }
+  }
+
+  private static List<FilesystemRule> withDenyOfDirectory(String directory, List<FilesystemRule> writableTree) {
+    List<FilesystemRule> rules = new ArrayList<>();
+    rules.add(rule(Set.of(AccessKind.WRITE), directory, Decision.DENY));
+    rules.add(rule(Set.of(AccessKind.WRITE), directory + "/**", Decision.DENY));
+    rules.addAll(writableTree);
+    return List.copyOf(rules);
   }
 
   private static FilesystemRule allowRule(String pattern) {
