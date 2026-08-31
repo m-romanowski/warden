@@ -8,13 +8,13 @@ import java.util.List;
 
 // Assembles the real bwrap argv. bwrap does not do fine-grained filesystem access control at all
 // here - that is AppArmor's job, evaluated lazily by the kernel against the profile
-// AppArmorProfile loads separately. bwrap's only remaining jobs are: (1) network namespace
-// isolation (--unshare-net, a genuine kernel boundary AppArmor does not provide), and (2) making
-// paths reachable at all - the sandbox root, the network bridge, the unique per-session target
-// binary warden's own bwrap profile transitions through, and every caller-declared PathMount. A
-// single broad bind of the sandbox root is deliberate, not an oversight - the fine-grained
-// ALLOW/DENY carve-outs within it are enforced by the AppArmor profile the sandboxed process runs
-// under, not by which paths bwrap chooses to mount.
+// AppArmorProfile loads separately. bwrap's only remaining jobs are: (1) network and pid namespace
+// isolation (genuine kernel boundaries AppArmor does not provide), and (2) making paths reachable
+// at all - the sandbox root, the network bridge, the unique per-session target binary warden's own
+// bwrap profile transitions through, and every caller-declared PathMount. A single broad bind of
+// the sandbox root is deliberate, not an oversight - the fine-grained ALLOW/DENY carve-outs within
+// it are enforced by the AppArmor profile the sandboxed process runs under, not by which paths
+// bwrap chooses to mount.
 final class BwrapArgvGenerator {
 
   private static final List<String> BOOTSTRAP_READ_ONLY_PATHS =
@@ -46,6 +46,7 @@ final class BwrapArgvGenerator {
 
   private static void appendNamespaceAndBootstrap(List<String> argv) {
     argv.add("--unshare-net");
+    argv.add("--unshare-pid");
     argv.add("--tmpfs");
     argv.add("/");
     argv.add("--proc");
