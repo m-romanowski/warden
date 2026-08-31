@@ -44,7 +44,7 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Push release commit and tag
-        run: git push origin HEAD "v${{ steps.bump.outputs.version }}"
+        run: git push --atomic origin HEAD "v${{ steps.bump.outputs.version }}"
 
       - name: Build release artifacts
         run: ./gradlew assemble
