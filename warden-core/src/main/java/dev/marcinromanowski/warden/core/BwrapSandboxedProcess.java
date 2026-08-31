@@ -2,19 +2,16 @@ package dev.marcinromanowski.warden.core;
 
 import dev.marcinromanowski.warden.api.SandboxedProcess;
 import java.net.URI;
-import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 
 // Linux counterpart to OsSandboxedProcess: wraps the bwrap-launched Process plus every resource a
-// Linux launch establishes alongside it - the AppArmor filesystem profile, its px bwrap-stacking
-// attachment, SandboxProxyServer (bound over a Unix domain socket here, not loopback TCP, since
-// loopback does not cross network-namespace boundaries), the optional ControlPlaneRelay, and the
-// session directory. close() tears all of these down together, in the reverse order they were
-// established (bwrap attachment before the profile it references, so the stacking rule never
-// briefly points at an already-unloaded profile).
+// Linux launch establishes alongside it - the AppArmor policy, SandboxProxyServer (bound over a
+// Unix domain socket here, not loopback TCP, since loopback does not cross network-namespace
+// boundaries), the optional ControlPlaneRelay, and the per-session directories. close() tears all
+// of these down together, in the reverse order they were established.
 //
 // Process-tree-aware teardown, same reasoning as OsSandboxedProcess documents for its own close().
 final class BwrapSandboxedProcess implements SandboxedProcess {
@@ -24,26 +21,20 @@ final class BwrapSandboxedProcess implements SandboxedProcess {
   private final Process process;
   private final SandboxProxyServer proxy;
   private final Optional<ControlPlaneRelay> controlPlaneRelay;
-  private final AppArmorBwrapAttachment bwrapAttachment;
-  private final AppArmorProfile profile;
-  private final Path sessionDirectory;
+  private final BwrapSessionStore.Session session;
   private final Optional<URI> resolvedControlPlaneUri;
 
   BwrapSandboxedProcess(
       Process process,
       SandboxProxyServer proxy,
       Optional<ControlPlaneRelay> controlPlaneRelay,
-      AppArmorBwrapAttachment bwrapAttachment,
-      AppArmorProfile profile,
-      Path sessionDirectory,
+      BwrapSessionStore.Session session,
       Optional<URI> resolvedControlPlaneUri
   ) {
     this.process = process;
     this.proxy = proxy;
     this.controlPlaneRelay = controlPlaneRelay;
-    this.bwrapAttachment = bwrapAttachment;
-    this.profile = profile;
-    this.sessionDirectory = sessionDirectory;
+    this.session = session;
     this.resolvedControlPlaneUri = resolvedControlPlaneUri;
   }
 
@@ -104,9 +95,7 @@ final class BwrapSandboxedProcess implements SandboxedProcess {
     stopProcessIfAlive();
     controlPlaneRelay.ifPresent(ControlPlaneRelay::close);
     proxy.close();
-    bwrapAttachment.close();
-    profile.close();
-    SandboxSessionDirectories.deleteQuietly(sessionDirectory);
+    session.close();
   }
 
   private void stopProcessIfAlive() {

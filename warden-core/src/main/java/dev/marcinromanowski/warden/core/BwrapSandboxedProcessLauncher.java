@@ -19,17 +19,18 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.function.Consumer;
 
-// Linux counterpart to the macOS flow OsSandboxedProcessLauncher runs inline: loads a per-session
-// AppArmor filesystem profile (AppArmorProfile), attaches the px bwrap-stacking rule that lets an
-// unprivileged userns creation actually run under it (AppArmorBwrapAttachment), then composes
+// Linux counterpart to the macOS flow OsSandboxedProcessLauncher runs inline: loads the
+// per-session AppArmor policy (AppArmorProfile - bwrap's own confinement profile, attached to a
+// per-session copy of the caller's bwrap, plus the payload's filesystem profile), then composes
 // BwrapArgvGenerator (pure argv assembly - network isolation + reachability only, AppArmor does
 // the fine-grained filesystem access control) + BwrapNetworkBridgeScript (the in-sandbox bridge
 // entrypoint) + SandboxProxyServer bound over a Unix domain socket (loopback TCP does not cross
 // network-namespace boundaries) + an optional ControlPlaneRelay into one real bwrap launch.
 //
-// Deliberately does not vendor bwrap/socat/apparmor_parser/aa-exec - all resolved via LinuxTools
-// (PATH by default), a real fail-closed launch failure when any is missing, exactly like macOS's
-// own requireMacOs() fails closed on the wrong platform.
+// Deliberately does not vendor bwrap or socat - both resolved via LinuxTools (PATH by default), a
+// real fail-closed launch failure when either is missing, exactly like macOS's own requireMacOs()
+// fails closed on the wrong platform. apparmor_parser is not resolved here at all: it is reached
+// only through the root-owned helper AppArmorProfile runs, which names it itself.
 final class BwrapSandboxedProcessLauncher {
 
   private static final Path IN_SANDBOX_BRIDGE_DIRECTORY = Path.of(AppArmorProfileGenerator.BWRAP_BRIDGE_DIRECTORY);
@@ -37,13 +38,12 @@ final class BwrapSandboxedProcessLauncher {
   private static final String PROXY_SOCKET_FILE_NAME = BwrapSessionPaths.PROXY_SOCKET_FILE_NAME;
   private static final String CONTROL_SOCKET_FILE_NAME = BwrapSessionPaths.CONTROL_SOCKET_FILE_NAME;
   private static final String TARGET_BINARY_FILE_NAME = BwrapSessionPaths.TARGET_BINARY_FILE_NAME;
-  private static final String SESSION_DIRECTORY_PREFIX = "warden-sandbox-session-";
+  private static final String SESSION_BWRAP_FILE_NAME = "bwrap";
   private static final String SOURCE_SHELL_EXECUTABLE = "/bin/sh";
   private static final String HTTP_PROXY_ENV = "HTTP_PROXY";
   private static final String HTTPS_PROXY_ENV = "HTTPS_PROXY";
   private static final String BWRAP_TOOL_NAME = "bwrap";
   private static final String SOCAT_TOOL_NAME = "socat";
-  private static final String APPARMOR_PARSER_TOOL_NAME = "apparmor_parser";
 
   private final LinuxTools linuxTools;
   private final Consumer<String> diagnostics;
@@ -62,27 +62,38 @@ final class BwrapSandboxedProcessLauncher {
   SandboxedProcess launch(SandboxLaunchRequest request) {
     Path bwrapExecutable = linuxTools.resolveExecutable(BWRAP_TOOL_NAME);
     Path socatExecutable = linuxTools.resolveExecutable(SOCAT_TOOL_NAME);
-    linuxTools.resolveExecutable(APPARMOR_PARSER_TOOL_NAME);
 
-    Path sessionDirectory = createSessionDirectory();
+    AppArmorSessionPolicy.requireInstalled();
+    AppArmorSessionProfileNames names = AppArmorSessionProfileNames.forNewSession();
+    BwrapSessionStore.Session session = BwrapSessionStore.open(names.sessionId(), diagnostics);
+    Path sessionDirectory = session.sessionDirectory();
     Path uniqueTargetBinary;
-    AppArmorProfile profile = null;
-    AppArmorBwrapAttachment attachment = null;
     SandboxProxyServer proxy = null;
     Optional<ControlPlaneRelay> controlPlaneRelay = Optional.empty();
     Process process = null;
     boolean established = false;
+    boolean policyOutcomeUnknown = false;
 
     try {
       uniqueTargetBinary = createUniqueTargetBinary(sessionDirectory);
-      Optional<Integer> controlPlanePort = controlPlanePort(request);
-      profile = AppArmorProfile.load(
-          linuxTools,
-          request.filesystemRules(),
-          new BwrapSessionPaths(sessionDirectory, controlPlanePort.isPresent()),
-          socatExecutable
+      Path sessionBwrapExecutable = copyExecutable(
+          bwrapExecutable,
+          session.toolsDirectory()
+              .resolve(SESSION_BWRAP_FILE_NAME),
+          "sandbox bwrap"
       );
-      attachment = AppArmorBwrapAttachment.attach(uniqueTargetBinary, profile.name());
+      Optional<Integer> controlPlanePort = controlPlanePort(request);
+      try {
+        AppArmorSessionPolicy.load(
+            request.filesystemRules(),
+            names,
+            new BwrapSessionPaths(sessionDirectory, controlPlanePort.isPresent()),
+            socatExecutable
+        );
+      } catch (PrivilegedOutcomeUnknownException e) {
+        policyOutcomeUnknown = true;
+        throw e;
+      }
 
       proxy = startProxy(request, sessionDirectory);
       controlPlaneRelay = controlPlanePort.isPresent()
@@ -90,7 +101,7 @@ final class BwrapSandboxedProcessLauncher {
           : Optional.empty();
 
       writeBridgeScript(sessionDirectory, socatExecutable, controlPlanePort);
-      List<String> argv = buildArgv(bwrapExecutable, socatExecutable, sessionDirectory, request, uniqueTargetBinary);
+      List<String> argv = buildArgv(sessionBwrapExecutable, socatExecutable, sessionDirectory, request, uniqueTargetBinary);
 
       process = startProcess(request, argv);
       diagnostics.accept("sandboxed process started pid=" + process.pid());
@@ -99,16 +110,14 @@ final class BwrapSandboxedProcessLauncher {
           process,
           proxy,
           controlPlaneRelay,
-          attachment,
-          profile,
-          sessionDirectory,
+          session,
           resolvedControlPlaneUri
       );
       established = true;
       return sandboxedProcess;
     } finally {
       if (!established) {
-        releasePartialLaunchResources(sessionDirectory, proxy, controlPlaneRelay, attachment, profile, process);
+        releasePartialLaunchResources(session, proxy, controlPlaneRelay, process, policyOutcomeUnknown);
       }
     }
   }
@@ -127,12 +136,11 @@ final class BwrapSandboxedProcessLauncher {
   }
 
   private static void releasePartialLaunchResources(
-      Path sessionDirectory,
+      BwrapSessionStore.Session session,
       SandboxProxyServer proxy,
       Optional<ControlPlaneRelay> controlPlaneRelay,
-      AppArmorBwrapAttachment attachment,
-      AppArmorProfile profile,
-      Process process
+      Process process,
+      boolean policyOutcomeUnknown
   ) {
     if (process != null) {
       process.destroyForcibly();
@@ -141,39 +149,37 @@ final class BwrapSandboxedProcessLauncher {
     if (proxy != null) {
       proxy.close();
     }
-    if (attachment != null) {
-      attachment.close();
+    if (policyOutcomeUnknown) {
+      BwrapSessionStore.abandon(session);
+      return;
     }
-    if (profile != null) {
-      profile.close();
-    }
-    SandboxSessionDirectories.deleteQuietly(sessionDirectory);
+    session.close();
   }
 
-  private static Path createSessionDirectory() {
-    try {
-      return SecureTempFiles.createOwnerOnlyTempDirectory(SESSION_DIRECTORY_PREFIX);
-    } catch (IOException e) {
-      throw new SandboxEstablishmentException("Failed to create sandbox session directory", e);
-    }
-  }
-
-  // A copy (not a symlink or bind-only reference) of a plain shell, at a unique per-session path -
-  // this is what AppArmorBwrapAttachment's px stacking rule targets, and what bwrap itself execs
-  // as the sandboxed process's entrypoint (which in turn execs the bridge script). Must be a real,
-  // independent path per session: the kernel's own no_new_privs exec-time stacking rule has no way
-  // to scope itself to "this one session" other than by the exec target's own filesystem path.
+  // Copies, not symlinks: AppArmor attaches a profile and resolves an exec transition by the fully
+  // resolved path, so a symlink to a shared binary is the shared binary as far as policy goes
+  // (a profile naming the link matched nothing when the link was exec'd). Each of these
+  // needs a path no other session shares, because the path is the only thing scoping a profile to
+  // one session: bwrap's copy is what warden's own confinement profile attaches to, and the shell
+  // copy is what that profile's px rule names as the way into the payload's filesystem profile.
+  //
+  // A caller supplying a setuid bwrap loses the setuid bit here. That costs nothing on a kernel
+  // offering unprivileged user namespaces, which is the only kind this mechanism works on at all.
   private static Path createUniqueTargetBinary(Path sessionDirectory) {
+    return copyExecutable(
+        Path.of(SOURCE_SHELL_EXECUTABLE),
+        sessionDirectory.resolve(TARGET_BINARY_FILE_NAME),
+        "sandbox target binary"
+    );
+  }
+
+  private static Path copyExecutable(Path source, Path destination, String description) {
     try {
-      Path targetBinary = sessionDirectory.resolve(TARGET_BINARY_FILE_NAME);
-      Files.copy(Path.of(SOURCE_SHELL_EXECUTABLE), targetBinary, StandardCopyOption.COPY_ATTRIBUTES);
-      Files.setPosixFilePermissions(
-          targetBinary,
-          PosixFilePermissions.fromString("r-xr-x---")
-      );
-      return targetBinary;
+      Files.copy(source, destination, StandardCopyOption.COPY_ATTRIBUTES);
+      Files.setPosixFilePermissions(destination, PosixFilePermissions.fromString("r-xr-x---"));
+      return destination;
     } catch (IOException e) {
-      throw new SandboxEstablishmentException("Failed to create unique per-session sandbox target binary", e);
+      throw new SandboxEstablishmentException("Failed to create unique per-session " + description, e);
     }
   }
 
@@ -218,7 +224,7 @@ final class BwrapSandboxedProcessLauncher {
   }
 
   private static List<String> buildArgv(
-      Path bwrapExecutable,
+      Path sessionBwrapExecutable,
       Path socatExecutable,
       Path sessionDirectory,
       SandboxLaunchRequest request,
@@ -242,7 +248,7 @@ final class BwrapSandboxedProcessLauncher {
     );
 
     List<String> argv = new ArrayList<>(generated);
-    argv.set(0, bwrapExecutable.toString());
+    argv.set(0, sessionBwrapExecutable.toString());
     return argv;
   }
 

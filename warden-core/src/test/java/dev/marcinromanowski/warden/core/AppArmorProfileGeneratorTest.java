@@ -6,6 +6,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import dev.marcinromanowski.warden.api.AccessKind;
 import dev.marcinromanowski.warden.api.Decision;
 import dev.marcinromanowski.warden.api.FilesystemRule;
+import dev.marcinromanowski.warden.api.RulePath;
 import dev.marcinromanowski.warden.api.SandboxRuleRejectedException;
 import java.nio.file.Path;
 import java.util.List;
@@ -39,7 +40,7 @@ class AppArmorProfileGeneratorTest {
 
   @Test
   void emitsAllowClauseForAllowedWorkspaceRoot() {
-    FilesystemRule workspaceWrite = rule(Set.of(AccessKind.WRITE), WORKSPACE_ROOT_PATTERN, Decision.ALLOW);
+    FilesystemRule workspaceWrite = rule(Set.of(AccessKind.WRITE), RulePath.glob(WORKSPACE_ROOT_PATTERN), Decision.ALLOW);
 
     String profile = generate(List.of(workspaceWrite));
 
@@ -49,7 +50,7 @@ class AppArmorProfileGeneratorTest {
 
   @Test
   void emitsDenyClauseForDeniedCredentialGlob() {
-    FilesystemRule denyCredential = rule(Set.of(AccessKind.READ), "**/.env", Decision.DENY);
+    FilesystemRule denyCredential = rule(Set.of(AccessKind.READ), RulePath.glob("**/.env"), Decision.DENY);
 
     String profile = generate(List.of(denyCredential));
 
@@ -59,7 +60,7 @@ class AppArmorProfileGeneratorTest {
 
   @Test
   void emitsBothReadAndWriteModeLettersWhenBothAreGranted() {
-    FilesystemRule readWrite = rule(Set.of(AccessKind.READ, AccessKind.WRITE), WORKSPACE_ROOT_PATTERN, Decision.ALLOW);
+    FilesystemRule readWrite = rule(Set.of(AccessKind.READ, AccessKind.WRITE), RulePath.glob(WORKSPACE_ROOT_PATTERN), Decision.ALLOW);
 
     String profile = generate(List.of(readWrite));
 
@@ -69,7 +70,7 @@ class AppArmorProfileGeneratorTest {
 
   @Test
   void asksFoldToDenyBecauseThereIsNoSynchronousApprovalChannelAtTheSyscallBoundary() {
-    FilesystemRule askRule = rule(Set.of(AccessKind.WRITE), "/workspace/scratch/**", Decision.ASK);
+    FilesystemRule askRule = rule(Set.of(AccessKind.WRITE), RulePath.glob("/workspace/scratch/**"), Decision.ASK);
 
     String profile = generate(List.of(askRule));
 
@@ -81,7 +82,7 @@ class AppArmorProfileGeneratorTest {
   @Test
   void externalDirectoryAloneFoldsIntoReadModeEmission() {
     FilesystemRule externalDirectoryOnly = rule(
-        Set.of(AccessKind.EXTERNAL_DIRECTORY), "/some/external/root/**", Decision.ALLOW
+        Set.of(AccessKind.EXTERNAL_DIRECTORY), RulePath.glob("/some/external/root/**"), Decision.ALLOW
     );
 
     String profile = generate(List.of(externalDirectoryOnly));
@@ -95,7 +96,7 @@ class AppArmorProfileGeneratorTest {
     // The caller (not this generator) decides whether a rule is "listing only" by the pattern
     // shape it supplies - a bare directory path with no /** suffix. Confirmed empirically in
     // AppArmorProfileGeneratorEnforcementTest that AppArmor itself treats this as listing-only.
-    FilesystemRule ancestorListing = rule(Set.of(AccessKind.READ), "/workspace/parent/", Decision.ALLOW);
+    FilesystemRule ancestorListing = rule(Set.of(AccessKind.READ), RulePath.literal("/workspace/parent/"), Decision.ALLOW);
 
     String profile = generate(List.of(ancestorListing));
 
@@ -105,7 +106,7 @@ class AppArmorProfileGeneratorTest {
 
   @Test
   void executeEmitsInheritExecSoTheChildStaysUnderTheSameProfile() {
-    FilesystemRule executable = rule(Set.of(AccessKind.READ, AccessKind.EXECUTE), "/tools/backend", Decision.ALLOW);
+    FilesystemRule executable = rule(Set.of(AccessKind.READ, AccessKind.EXECUTE), RulePath.literal("/tools/backend"), Decision.ALLOW);
 
     String profile = generate(List.of(executable));
 
@@ -118,7 +119,7 @@ class AppArmorProfileGeneratorTest {
     // apparmor_parser refuses a whole profile carrying "deny <path> ix," ("Invalid perms, in deny
     // rules 'x' must not be preceded by exec qualifier 'i', 'p', or 'u'"), and a refused profile is a
     // failed sandbox launch, not a rejected rule.
-    FilesystemRule unrunnable = rule(Set.of(AccessKind.EXECUTE), "/workspace/**/*.sh", Decision.DENY);
+    FilesystemRule unrunnable = rule(Set.of(AccessKind.EXECUTE), RulePath.glob("/workspace/**/*.sh"), Decision.DENY);
 
     String profile = generate(List.of(unrunnable));
 
@@ -130,7 +131,7 @@ class AppArmorProfileGeneratorTest {
   @Test
   void readAndExecuteOnDenyKeepsReadAndDropsTheTransitionQualifier() {
     FilesystemRule unreadableAndUnrunnable = rule(
-        Set.of(AccessKind.READ, AccessKind.EXECUTE), "/tools/backend", Decision.DENY
+        Set.of(AccessKind.READ, AccessKind.EXECUTE), RulePath.literal("/tools/backend"), Decision.DENY
     );
 
     String profile = generate(List.of(unreadableAndUnrunnable));
@@ -142,7 +143,7 @@ class AppArmorProfileGeneratorTest {
 
   @Test
   void lockOnDenyEmitsTheSameLockModeLetter() {
-    FilesystemRule unlockable = rule(Set.of(AccessKind.READ, AccessKind.LOCK), "/state/**", Decision.DENY);
+    FilesystemRule unlockable = rule(Set.of(AccessKind.READ, AccessKind.LOCK), RulePath.glob("/state/**"), Decision.DENY);
 
     String profile = generate(List.of(unlockable));
 
@@ -153,7 +154,7 @@ class AppArmorProfileGeneratorTest {
   @Test
   void lockEmitsTheDistinctLockModeLetter() {
     FilesystemRule lockable = rule(
-        Set.of(AccessKind.READ, AccessKind.WRITE, AccessKind.LOCK), "/state/**", Decision.ALLOW
+        Set.of(AccessKind.READ, AccessKind.WRITE, AccessKind.LOCK), RulePath.glob("/state/**"), Decision.ALLOW
     );
 
     String profile = generate(List.of(lockable));
@@ -164,7 +165,7 @@ class AppArmorProfileGeneratorTest {
 
   @Test
   void writeWithoutLockStillEmitsNoLockModeLetter() {
-    FilesystemRule readWrite = rule(Set.of(AccessKind.READ, AccessKind.WRITE), "/state/**", Decision.ALLOW);
+    FilesystemRule readWrite = rule(Set.of(AccessKind.READ, AccessKind.WRITE), RulePath.glob("/state/**"), Decision.ALLOW);
 
     String profile = generate(List.of(readWrite));
 
@@ -179,7 +180,7 @@ class AppArmorProfileGeneratorTest {
     // what mediates listing. Carrying the rule's own "w" there was a real capability rather than a
     // formality: it is what mediates renaming the named directory itself, which needs no emptying and
     // let a confined process relocate a granted tree wholesale.
-    FilesystemRule workspaceRoot = rule(Set.of(AccessKind.READ, AccessKind.WRITE), "/workspace", Decision.ALLOW);
+    FilesystemRule workspaceRoot = rule(Set.of(AccessKind.READ, AccessKind.WRITE), RulePath.literal("/workspace"), Decision.ALLOW);
 
     String profile = generate(List.of(workspaceRoot));
 
@@ -191,7 +192,7 @@ class AppArmorProfileGeneratorTest {
 
   @Test
   void namesNoDirectoryFormForAnAllowThatGrantsNoReadToListWith() {
-    FilesystemRule writeOnly = rule(Set.of(AccessKind.WRITE), "/dev/null", Decision.ALLOW);
+    FilesystemRule writeOnly = rule(Set.of(AccessKind.WRITE), RulePath.literal("/dev/null"), Decision.ALLOW);
 
     String profile = generate(List.of(writeOnly));
 
@@ -205,7 +206,7 @@ class AppArmorProfileGeneratorTest {
     // A deny pair of "<dir>" and "<dir>/**" alone still lets a confined process mkdir that directory,
     // because mkdir is mediated against the trailing-slash name only. The deny companion keeps the
     // rule's own mode, unlike the allow one: "w" there is exactly what refuses mkdir and rename.
-    FilesystemRule pluginDirectory = rule(Set.of(AccessKind.WRITE), "/workspace/.opencode/plugin", Decision.DENY);
+    FilesystemRule pluginDirectory = rule(Set.of(AccessKind.WRITE), RulePath.literal("/workspace/.opencode/plugin"), Decision.DENY);
 
     String profile = generate(List.of(pluginDirectory));
 
@@ -218,7 +219,7 @@ class AppArmorProfileGeneratorTest {
   void denyGlobMatchingAnywhereAlsoNamesTheRootLevelFormItsRecursiveGlobMisses() {
     // "**" does not match the empty string between two slashes, so "/**/.env" leaves a file sitting
     // directly at "/" uncovered. On a deny that hole is closed by naming the zero-segment reading.
-    FilesystemRule credentials = rule(Set.of(AccessKind.READ), "**/.env", Decision.DENY);
+    FilesystemRule credentials = rule(Set.of(AccessKind.READ), RulePath.glob("**/.env"), Decision.DENY);
 
     String profile = generate(List.of(credentials));
 
@@ -234,7 +235,7 @@ class AppArmorProfileGeneratorTest {
     // are authored against, "**/.env.example" does match "/.env.example" - so the caller did write
     // this case, and macOS grants it. Getting it wrong on a deny costs one unreachable path, and
     // getting it wrong on an allow hands out access at the filesystem root.
-    FilesystemRule templates = rule(Set.of(AccessKind.READ), "**/.env.example", Decision.ALLOW);
+    FilesystemRule templates = rule(Set.of(AccessKind.READ), RulePath.glob("**/.env.example"), Decision.ALLOW);
 
     String profile = generate(List.of(templates));
 
@@ -247,9 +248,10 @@ class AppArmorProfileGeneratorTest {
   void grantsWardensOwnReservedFilesWithoutOutrankingAnythingTheCallerWrote() {
     String profile = AppArmorProfileGenerator.generate(
         PROFILE_NAME,
-        List.of(rule(Set.of(AccessKind.READ), "/unrelated/**", Decision.DENY)),
+        List.of(rule(Set.of(AccessKind.READ), RulePath.glob("/unrelated/**"), Decision.DENY)),
         Optional.of(new BwrapSessionPaths(Path.of("/tmp/warden-session-xyz"), true)),
-        Optional.of(Path.of("/opt/tools/socat"))
+        Optional.of(Path.of("/opt/tools/socat")),
+        Optional.empty()
     );
 
     assertThat(profile)
@@ -269,11 +271,28 @@ class AppArmorProfileGeneratorTest {
   }
 
   @Test
+  void escapesItsOwnReservedPathsAsLiteralsRatherThanAsPatterns() {
+    String profile = AppArmorProfileGenerator.generate(
+        PROFILE_NAME,
+        List.of(),
+        Optional.of(new BwrapSessionPaths(Path.of("/var/my sessions/xyz"), false)),
+        Optional.of(Path.of("/opt/my tools/soc*at")),
+        Optional.empty()
+    );
+
+    assertThat(profile)
+        .contains("/var/my\\040sessions/xyz/target-shell mrix,")
+        .contains("/var/my\\040sessions/xyz/proxy.sock rw,")
+        .contains("/opt/my\\040tools/soc\\052at rix,");
+  }
+
+  @Test
   void omitsTheControlSocketClauseWhenTheLaunchHasNoControlPlane() {
     String profile = AppArmorProfileGenerator.generate(
         PROFILE_NAME,
         List.of(),
         Optional.of(new BwrapSessionPaths(Path.of("/tmp/warden-session-xyz"), false)),
+        Optional.empty(),
         Optional.empty()
     );
 
@@ -286,9 +305,10 @@ class AppArmorProfileGeneratorTest {
   void refusesTheCallerDenyThatCoversWhatWardenItselfNeeds() {
     assertThatThrownBy(() -> AppArmorProfileGenerator.generate(
         PROFILE_NAME,
-        List.of(rule(Set.of(AccessKind.READ), "**/tmp/**", Decision.DENY)),
+        List.of(rule(Set.of(AccessKind.READ), RulePath.glob("**/tmp/**"), Decision.DENY)),
         Optional.of(new BwrapSessionPaths(Path.of("/tmp/warden-session-xyz"), true)),
-        Optional.of(Path.of("/opt/tools/socat"))
+        Optional.of(Path.of("/opt/tools/socat")),
+        Optional.empty()
     ))
         .isInstanceOf(SandboxRuleRejectedException.class)
         .hasMessageContaining("**/tmp/**")
@@ -299,9 +319,10 @@ class AppArmorProfileGeneratorTest {
   void doesNotRefuseTheDenyThatTakesNothingWardenNeeds() {
     String profile = AppArmorProfileGenerator.generate(
         PROFILE_NAME,
-        List.of(rule(Set.of(AccessKind.EXTERNAL_DIRECTORY), "/tmp/**", Decision.DENY)),
+        List.of(rule(Set.of(AccessKind.EXTERNAL_DIRECTORY), RulePath.glob("/tmp/**"), Decision.DENY)),
         Optional.of(new BwrapSessionPaths(Path.of("/tmp/warden-session-xyz"), true)),
-        Optional.of(Path.of("/opt/tools/socat"))
+        Optional.of(Path.of("/opt/tools/socat")),
+        Optional.empty()
     );
 
     assertThat(profile)
@@ -313,13 +334,28 @@ class AppArmorProfileGeneratorTest {
     // Signals are how JavaScriptCore suspends its own threads, and an enforcing profile that names no
     // signal rule denies them - measured as a backend that prints its own "listening" line and then
     // dies. Scoped to this profile's own label, in both the spellings a launch can carry.
+    String profile = AppArmorProfileGenerator.generate(
+        PROFILE_NAME,
+        List.of(),
+        Optional.empty(),
+        Optional.empty(),
+        Optional.of("a-bwrap//&" + PROFILE_NAME + "//&z-unpriv")
+    );
+
+    assertThat(profile)
+        .contains("signal peer=" + PROFILE_NAME + ",")
+        .contains("signal peer=a-bwrap//&" + PROFILE_NAME + "//&z-unpriv,")
+        .as("never a blanket signal grant")
+        .doesNotContain("\n  signal,");
+  }
+
+  @Test
+  void omitsTheStackedSignalSpellingWhenNoStackIsGiven() {
     String profile = AppArmorProfileGenerator.generate(PROFILE_NAME, List.of());
 
     assertThat(profile)
         .contains("signal peer=" + PROFILE_NAME + ",")
-        .contains("signal peer=bwrap//&unpriv_bwrap//&" + PROFILE_NAME + ",")
-        .as("never a blanket signal grant")
-        .doesNotContain("\n  signal,");
+        .doesNotContain("//&");
   }
 
   @Test
@@ -327,8 +363,8 @@ class AppArmorProfileGeneratorTest {
     String profile = AppArmorProfileGenerator.generate(
         PROFILE_NAME,
         List.of(
-            rule(Set.of(AccessKind.EXTERNAL_DIRECTORY), "/home/someone", Decision.ALLOW),
-            rule(Set.of(AccessKind.READ), "/home/other", Decision.ALLOW)
+            rule(Set.of(AccessKind.EXTERNAL_DIRECTORY), RulePath.literal("/home/someone"), Decision.ALLOW),
+            rule(Set.of(AccessKind.READ), RulePath.literal("/home/other"), Decision.ALLOW)
         )
     );
 
@@ -341,7 +377,7 @@ class AppArmorProfileGeneratorTest {
 
   @Test
   void denyGlobNamingEveryDirectoryDoesNotNameTheFilesystemRootItself() {
-    FilesystemRule everyDirectory = rule(Set.of(AccessKind.WRITE), "**/", Decision.DENY);
+    FilesystemRule everyDirectory = rule(Set.of(AccessKind.WRITE), RulePath.glob("**/"), Decision.DENY);
 
     String profile = generate(List.of(everyDirectory));
 
@@ -352,7 +388,7 @@ class AppArmorProfileGeneratorTest {
 
   @Test
   void leavesRecursivePatternsAloneBecauseTheyAlreadySpanDirectoryNames() {
-    FilesystemRule recursive = rule(Set.of(AccessKind.READ), "/workspace/**", Decision.ALLOW);
+    FilesystemRule recursive = rule(Set.of(AccessKind.READ), RulePath.glob("/workspace/**"), Decision.ALLOW);
 
     String profile = generate(List.of(recursive));
 
@@ -363,7 +399,7 @@ class AppArmorProfileGeneratorTest {
 
   @Test
   void leavesPatternsAlreadyInDirectoryFormAlone() {
-    FilesystemRule directoryForm = rule(Set.of(AccessKind.READ), "/workspace/parent/", Decision.ALLOW);
+    FilesystemRule directoryForm = rule(Set.of(AccessKind.READ), RulePath.literal("/workspace/parent/"), Decision.ALLOW);
 
     String profile = generate(List.of(directoryForm));
 
@@ -374,7 +410,7 @@ class AppArmorProfileGeneratorTest {
 
   @Test
   void denyGlobWithARepeatedLeadingRecursiveGlobNamesEveryDepthItMisses() {
-    FilesystemRule credentials = rule(Set.of(AccessKind.READ), "**/**/.env", Decision.DENY);
+    FilesystemRule credentials = rule(Set.of(AccessKind.READ), RulePath.glob("**/**/.env"), Decision.DENY);
 
     String profile = generate(List.of(credentials));
 
@@ -391,8 +427,8 @@ class AppArmorProfileGeneratorTest {
     // confirmed on a real kernel - see AppArmorProfileGeneratorEnforcementTest). This test only
     // asserts both clauses are present in the given input order. The actual order-independence
     // property is proven by running both orderings through a real kernel in the enforcement test.
-    FilesystemRule denyCredential = rule(Set.of(AccessKind.READ), "**/.env", Decision.DENY);
-    FilesystemRule allowWorkspace = rule(Set.of(AccessKind.READ), WORKSPACE_ROOT_PATTERN, Decision.ALLOW);
+    FilesystemRule denyCredential = rule(Set.of(AccessKind.READ), RulePath.glob("**/.env"), Decision.DENY);
+    FilesystemRule allowWorkspace = rule(Set.of(AccessKind.READ), RulePath.glob(WORKSPACE_ROOT_PATTERN), Decision.ALLOW);
 
     String profile = generate(List.of(denyCredential, allowWorkspace));
 
@@ -409,9 +445,9 @@ class AppArmorProfileGeneratorTest {
     // this class's own header comment for why that's a real, deliberate input-order dependence, not
     // an oversight.
     FilesystemRule allowException = rule(
-        Set.of(AccessKind.READ), "/workspace/.env.example", Decision.ALLOW
+        Set.of(AccessKind.READ), RulePath.literal("/workspace/.env.example"), Decision.ALLOW
     );
-    FilesystemRule denyCredentialGlob = rule(Set.of(AccessKind.READ), "**/.env*", Decision.DENY);
+    FilesystemRule denyCredentialGlob = rule(Set.of(AccessKind.READ), RulePath.glob("**/.env*"), Decision.DENY);
 
     String profile = generate(List.of(allowException, denyCredentialGlob));
 
@@ -428,9 +464,9 @@ class AppArmorProfileGeneratorTest {
     // it should have been overridden by), this generator has no way to know the exception was
     // supposed to apply yet, so it correctly falls back to emitting the deny glob unchanged - a
     // real, named consequence of requiring priority-ordered input, not a silent bug.
-    FilesystemRule denyCredentialGlob = rule(Set.of(AccessKind.READ), "**/.env*", Decision.DENY);
+    FilesystemRule denyCredentialGlob = rule(Set.of(AccessKind.READ), RulePath.glob("**/.env*"), Decision.DENY);
     FilesystemRule allowException = rule(
-        Set.of(AccessKind.READ), "/workspace/.env.example", Decision.ALLOW
+        Set.of(AccessKind.READ), RulePath.literal("/workspace/.env.example"), Decision.ALLOW
     );
 
     String profile = generate(List.of(denyCredentialGlob, allowException));
@@ -442,7 +478,7 @@ class AppArmorProfileGeneratorTest {
   @Test
   void rejectsReasonContainingLineBreak() {
     FilesystemRule ruleWithNewlineInReason = new FilesystemRule(
-        WORKSPACE_ROOT_PATTERN,
+        RulePath.glob(WORKSPACE_ROOT_PATTERN),
         Set.of(AccessKind.READ),
         Decision.ALLOW,
         "harmless\nallow /** rwx,"
@@ -463,7 +499,7 @@ class AppArmorProfileGeneratorTest {
     return AppArmorProfileGenerator.generate(PROFILE_NAME, rules);
   }
 
-  private static FilesystemRule rule(Set<AccessKind> kinds, String pattern, Decision decision) {
-    return new FilesystemRule(pattern, kinds, decision, "test reason");
+  private static FilesystemRule rule(Set<AccessKind> kinds, RulePath target, Decision decision) {
+    return new FilesystemRule(target, kinds, decision, "test reason");
   }
 }

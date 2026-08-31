@@ -3,7 +3,6 @@ package dev.marcinromanowski.warden.core;
 import dev.marcinromanowski.warden.api.AccessKind;
 import dev.marcinromanowski.warden.api.Decision;
 import dev.marcinromanowski.warden.api.FilesystemRule;
-import dev.marcinromanowski.warden.api.SandboxRuleRejectedException;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -23,6 +22,13 @@ import java.util.Set;
 final class SeatbeltProfileGenerator {
 
   private static final String PROFILE_HEADER = "(version 1)\n(deny default)\n";
+  // (literal "/") carries file-read-data and not file-read*, which is the narrowest grant any
+  // process starts under at all: with metadata alone every launch aborts before reaching main,
+  // and with neither nothing runs. Listing the root needs both operations, so withholding the
+  // metadata half is what keeps "ls /" refused. A caller granting EXTERNAL_DIRECTORY on "/"
+  // supplies the other half itself and gets the listing back - that is the caller's rule, not
+  // this bootstrap's.
+  //
   // (literal "/var") / (literal "/tmp") grant read-metadata on the symlink *entries* themselves
   // (not recursively into whatever they point at) - without this, a sandboxed process that
   // constructs a path via its own non-canonical "/var/..."/"/tmp/..." string (e.g. from $TMPDIR,
@@ -34,12 +40,28 @@ final class SeatbeltProfileGenerator {
   // execute) access to standard system binaries - this sandbox's security boundary is what a
   // process can READ, WRITE, and reach over the NETWORK, not which programs it's allowed to
   // invoke at all.
+  //
+  // /private/etc is named entry by entry rather than as a subtree. A subtree grant is a blanket read
+  // of the machine's system configuration handed to every consumer of this library, and it was one:
+  // measured, /private/etc/passwd and /private/etc/ssh/sshd_config both returned their contents and
+  // /private/etc listed. What is here instead is the TLS root store and the resolver, service and
+  // timezone tables a networked payload consults through libc - files that carry no secret and that
+  // nothing else in this bootstrap supplies. The discriminating measurement is TLS: with the whole
+  // subtree removed an https request fails at "error setting certificate verify locations", and with
+  // these entries it succeeds, while every disclosure above stays refused. See
+  // SeatbeltProfileGeneratorEnforcementTest.
+  //
+  // Reaching any of them through the "/etc" symlink needs that entry granted too, which is a caller's
+  // rule and not this bootstrap's - the same division as "/var" and "/tmp" above, except that those
+  // two are named here because a process constructs them from its own environment.
   private static final String BOOTSTRAP_ALLOWANCES =
       """
-      (allow file-read* (literal "/") (literal "/var") (literal "/tmp") (subpath "/bin") \
+      (allow file-read-data (literal "/"))
+      (allow file-read* (literal "/var") (literal "/tmp") (subpath "/bin") \
       (subpath "/usr/bin") (subpath "/usr/lib") \
       (subpath "/usr/share") (subpath "/System/Library") (subpath "/private/var/db/dyld") \
-      (subpath "/private/etc") \
+      (subpath "/private/etc/ssl") (literal "/private/etc/hosts") (literal "/private/etc/resolv.conf") \
+      (literal "/private/etc/localtime") (literal "/private/etc/services") (literal "/private/etc/protocols") \
       (literal "/dev/null") (literal "/dev/zero") (literal "/dev/urandom") (literal "/dev/random"))
       (allow file-read* file-write* (subpath "/dev/tty") (subpath "/dev/ptmx"))
       (allow file-write* (regex #"^/dev/tty[a-z0-9]+$"))
@@ -58,14 +80,15 @@ final class SeatbeltProfileGenerator {
 
   static String generate(List<FilesystemRule> filesystemRules, int proxyPort, Optional<Integer> listenPort) {
     List<FilesystemRule> requiredRules = List.copyOf(Preconditions.nonNull(filesystemRules, "filesystemRules"));
-    requiredRules.forEach(SeatbeltProfileGenerator::rejectDeniedExecute);
     StringBuilder profile = new StringBuilder(PROFILE_HEADER);
     profile.append('\n')
         .append(BOOTSTRAP_ALLOWANCES);
     profile.append('\n');
-    appendFilesystemClauses(profile, requiredRules, AccessKind.READ, "file-read*");
+    appendReadClauses(profile, requiredRules);
     profile.append('\n');
     appendFilesystemClauses(profile, requiredRules, AccessKind.WRITE, "file-write*");
+    profile.append('\n');
+    appendFilesystemClauses(profile, requiredRules, AccessKind.EXECUTE, "process-exec");
     int requiredProxyPort = requirePositivePort(proxyPort, "proxyPort");
     Optional<Integer> requiredListenPort = requireOptionalPositivePort(listenPort, "listenPort");
     profile.append('\n')
@@ -83,93 +106,75 @@ final class SeatbeltProfileGenerator {
     // clause emitted, since SBPL's last-match-wins semantics decides ties by clause order.
     for (int index = rules.size() - 1; index >= 0; index--) {
       FilesystemRule rule = rules.get(index);
-      if (!appliesToKind(rule, kind)) {
+      if (!rule.accessKinds()
+          .contains(kind)) {
         continue;
       }
-      String regex = SeatbeltGlobTranslator.toRegex(rule.targetPattern());
-      String reason = requireSingleLineReason(rule.reason());
-      String clauseVerb = effectiveDecisionIsAllow(rule.decision()) ? "allow" : "deny";
-      profile.append('(')
-          .append(clauseVerb)
-          .append(' ')
-          .append(sbplOperation)
-          .append(" (regex #\"")
-          .append(regex)
-          .append("\")) ; ")
-          .append(reason)
-          .append('\n');
+      appendClause(profile, rule, sbplOperation);
     }
   }
 
-  // EXTERNAL_DIRECTORY gates whether a directory outside the sandbox root is addressable at all -
-  // a coarser concept with no distinct SBPL equivalent. Seatbelt only cares about the actual
-  // file-read/file-write syscalls, so an EXTERNAL_DIRECTORY rule folds into the read-clause
-  // emission alongside READ.
+  // READ and EXTERNAL_DIRECTORY share one pass rather than getting one each, because they name
+  // overlapping SBPL operations - file-read-metadata is one of the operations file-read* expands
+  // to. Emitted separately, the later pass would win over the earlier one for metadata whatever the
+  // caller's priorities said, so a lower-priority EXTERNAL_DIRECTORY allow would punch a hole in a
+  // higher-priority READ deny. One pass keeps clause order equal to priority order, which is the
+  // only thing SBPL decides a conflict by.
+  private static void appendReadClauses(StringBuilder profile, List<FilesystemRule> rules) {
+    for (int index = rules.size() - 1; index >= 0; index--) {
+      FilesystemRule rule = rules.get(index);
+      Set<AccessKind> kinds = rule.accessKinds();
+      if (kinds.contains(AccessKind.READ)) {
+        appendClause(profile, rule, "file-read*");
+      } else if (kinds.contains(AccessKind.EXTERNAL_DIRECTORY)) {
+        appendClause(profile, rule, externalDirectoryReadOperation(rule.decision()));
+      }
+    }
+  }
+
+  // The narrowing EXTERNAL_DIRECTORY expresses only exists on an allow. Granting the metadata half
+  // alone hands out a directory that can be resolved through and not listed. Refusing the metadata
+  // half alone hands out a file that cannot be stat'ed and whose bytes still read out, which is not
+  // what any caller writing a deny asked for and is a widening this generator would be inventing.
+  // On AppArmor the same kind already contributes plain read access to a deny's mode letters, so a
+  // deny means the same thing on both platforms only when it takes the whole read operation here.
+  private static String externalDirectoryReadOperation(Decision decision) {
+    return effectiveDecisionIsAllow(decision) ? "file-read-metadata" : "file-read*";
+  }
+
+  private static void appendClause(StringBuilder profile, FilesystemRule rule, String sbplOperation) {
+    String regex = SeatbeltGlobTranslator.toRegex(rule.target());
+    String reason = requireSingleLineReason(rule.reason());
+    String clauseVerb = effectiveDecisionIsAllow(rule.decision()) ? "allow" : "deny";
+    profile.append('(')
+        .append(clauseVerb)
+        .append(' ')
+        .append(sbplOperation)
+        .append(" (regex #\"")
+        .append(regex)
+        .append("\")) ; ")
+        .append(reason)
+        .append('\n');
+  }
+
+  // An ALLOW naming EXTERNAL_DIRECTORY means a directory outside the sandbox root may be resolved
+  // through and stat'ed, and not listed - the same thing it means on AppArmor. file-read-metadata is
+  // what expresses that: measured against a real sandbox-exec, an ancestor granted file-read-metadata
+  // refuses "ls" on itself while a file inside a granted subtree still opens through it, and the
+  // same ancestor granted file-read* lists its own entries. Listing is what file-read* adds, and
+  // nothing about addressing a directory needs it. A DENY takes file-read* instead, for the reason
+  // externalDirectoryReadOperation states.
   //
-  // EXECUTE folds into the same read clause on an ALLOW. SBPL has no per-path execute operation:
-  // which programs may run at all is the blanket (allow process-exec) in the bootstrap above, and
-  // what remains per-path is being able to read the image. So an allowed EXECUTE has to reach
-  // file-read* or the binary it names stays unrunnable on macOS while running on Linux. On a DENY it
-  // is refused outright instead - see rejectDeniedExecute.
+  // EXECUTE maps to process-exec, an SBPL operation of its own that takes the same path filters as
+  // the file operations. It does not fold into the read clause, matching what EXECUTE alone grants
+  // on AppArmor: a native binary runs from a path with no read grant at all on both platforms, and
+  // a script runs on neither, because its interpreter has to read it. Both measured, with a real
+  // Mach-O and a real script.
   //
   // LOCK contributes no clause of its own, and that is the whole of Seatbelt's story for it: macOS
   // mediates flock/fcntl locking through the descriptor a process already opened, never through a
   // path, so there is no operation to allow and none to deny. A caller that needs a lock granted or
   // refused as a distinct capability gets that on Linux only.
-  private static boolean appliesToKind(FilesystemRule rule, AccessKind kind) {
-    if (rule.accessKinds()
-        .contains(kind)) {
-      return true;
-    }
-    return kind == AccessKind.READ
-        && (rule.accessKinds()
-            .contains(AccessKind.EXTERNAL_DIRECTORY)
-            || rule.accessKinds()
-                .contains(AccessKind.EXECUTE));
-  }
-
-  // A DENY naming EXECUTE and nothing readable is refused here rather than translated, and this is
-  // the one rule shape whose meaning macOS cannot approximate in either direction. A deny that names
-  // READ alongside EXECUTE is not refused: the read clause it emits is what the caller asked for.
-  //
-  // Folding it into the read deny, which this generator used to do, is not "stricter than asked" in
-  // any harmless sense. A rule set of "deny EXECUTE <tree>/**" over "allow READ WRITE <tree>/**"
-  // emits the deny last, last-clause-wins puts it on top, and the confined process then cannot read
-  // a single file in that tree. The documented example "deny EXECUTE **/*.sh" means "no shell script
-  // may run" on Linux and "no shell script anywhere is readable" on macOS - and a rule set is authored
-  // once for both. Dropping the rule instead would make it enforce nothing on macOS while enforcing
-  // something on Linux, silently, which for a security control is worse still.
-  //
-  // What a caller can do instead depends on what the path holds, and the two cases differ - both
-  // measured with a real sandbox-exec, execing from a process the profile already covers.
-  // Denying file-read* on a shell script does stop it running (exit 126, "Operation not permitted"),
-  // because the interpreter has to read it. Denying file-read* on a Mach-O binary does not stop it
-  // running at all: the kernel's own image load is not mediated by file-read*, and the same binary
-  // ran with its read denied. So "deny READ and EXECUTE" is a real cross-platform spelling for a
-  // script (which is what the ".sh" shape callers write is), and there is no spelling at all for a
-  // native binary - on macOS, per-path execute is simply not a thing this sandbox can refuse.
-  private static void rejectDeniedExecute(FilesystemRule rule) {
-    Set<AccessKind> kinds = rule.accessKinds();
-    boolean deniesExecuteAlone = !effectiveDecisionIsAllow(rule.decision())
-        && kinds.contains(AccessKind.EXECUTE)
-        && !kinds.contains(AccessKind.READ)
-        && !kinds.contains(AccessKind.EXTERNAL_DIRECTORY);
-    if (!deniesExecuteAlone) {
-      return;
-    }
-    throw new SandboxRuleRejectedException(
-        "Seatbelt cannot express a DENY on EXECUTE alone - SBPL has no per-path execute operation,"
-            + " so the only clause it could emit is a read deny, which would make the path"
-            + " unreadable as well. Add READ to this rule: denying the read is a real refusal for a"
-            + " script on macOS and Linux both, because the interpreter has to read it. For a native"
-            + " binary macOS cannot refuse per-path execute at all, and there is no rule spelling"
-            + " that changes that - so a rule set that has to run on macOS should express the intent"
-            + " another way, by not granting the path in the first place or by not mounting it."
-            + " Offending rule: pattern=" + rule.targetPattern()
-            + ", kinds=" + kinds + ", reason=" + rule.reason(),
-        rule.targetPattern()
-    );
-  }
 
   // The OS sandbox has no synchronous approval channel at the syscall boundary - ASK folds to
   // DENY here, deliberately, not a bug to "fix" later.
@@ -179,7 +184,7 @@ final class SeatbeltProfileGenerator {
 
   // rule.reason() is interpolated after a ';' SBPL line comment. An embedded newline would let
   // whatever follows it be parsed as live SBPL syntax rather than comment text - the same class
-  // of injection risk SeatbeltGlobTranslator already guards against for targetPattern.
+  // of injection risk GlobPattern already guards against for a rule pattern.
   private static String requireSingleLineReason(String reason) {
     if (reason.indexOf('\n') >= 0 || reason.indexOf('\r') >= 0) {
       throw new IllegalArgumentException("Sandbox rule reason must not contain a line break: " + reason);

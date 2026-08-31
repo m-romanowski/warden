@@ -8,12 +8,15 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
-// Runs a command under sudo - the one-time-privileged operations AppArmor confinement needs
-// (loading/removing a profile, editing the local bwrap-userns-restrict override) all require
-// CAP_MAC_ADMIN, which this JVM does not run with. This is the project's one narrow, auditable
-// privileged surface: using an already-loaded profile (aa-exec -p <name>) needs no privilege at
-// all, only loading/removing one does. Deployment must grant passwordless sudo for exactly these
-// commands - see AppArmorProfile/AppArmorBwrapAttachment for the exact argv shapes this runs.
+// Runs a command under sudo. Loading and removing an AppArmor profile requires CAP_MAC_ADMIN,
+// which this JVM does not run with, and it is the only thing warden ever needs privilege for -
+// running under an already-loaded profile needs none. Deployment grants passwordless sudo for
+// one root-owned helper and nothing else - see AppArmorProfile for the argv shapes this runs, and
+// scripts/install-apparmor-policy.sh for the helper and the grant.
+//
+// Policy text goes over stdin rather than into a file the command is pointed at. A path the daemon
+// user can write is a path it can replace with a symlink between the check and the open, and the
+// parser follows one - so there is no path to hand over.
 final class PrivilegedProcesses {
 
   private static final Duration COMMAND_TIMEOUT = Duration.ofSeconds(30);
@@ -21,11 +24,12 @@ final class PrivilegedProcesses {
   private PrivilegedProcesses() {
   }
 
-  static void run(List<String> command) {
+  static void run(List<String> command, String standardInput) {
     List<String> withSudo = new ArrayList<>();
     withSudo.add("sudo");
     withSudo.addAll(Preconditions.nonNull(command, "command"));
     Process process = start(withSudo);
+    writeInput(process, Preconditions.nonNull(standardInput, "standardInput"));
     String output = readOutput(process);
     int exitCode = awaitExit(process, withSudo);
     if (exitCode != 0) {
@@ -42,6 +46,14 @@ final class PrivilegedProcesses {
           .start();
     } catch (IOException e) {
       throw new SandboxEstablishmentException("Failed to start privileged command: " + command, e);
+    }
+  }
+
+  private static void writeInput(Process process, String standardInput) {
+    try (var sink = process.getOutputStream()) {
+      sink.write(standardInput.getBytes(StandardCharsets.UTF_8));
+    } catch (IOException e) {
+      throw new SandboxEstablishmentException("Failed to hand the privileged command its input", e);
     }
   }
 
@@ -64,11 +76,11 @@ final class PrivilegedProcesses {
     } catch (InterruptedException e) {
       Thread.currentThread()
           .interrupt();
-      throw new SandboxEstablishmentException("Interrupted while running privileged command: " + command, e);
+      throw new PrivilegedOutcomeUnknownException("Interrupted while running privileged command: " + command, e);
     }
     if (!finished) {
       process.destroyForcibly();
-      throw new SandboxEstablishmentException("Privileged command timed out: " + command);
+      throw new PrivilegedOutcomeUnknownException("Privileged command timed out: " + command);
     }
     return process.exitValue();
   }

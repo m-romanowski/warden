@@ -5,8 +5,9 @@ import java.io.Serial;
 /**
  * Thrown when a supplied {@link FilesystemRule} cannot be turned into a profile for the current
  * platform, and the launch is refused rather than silently given a different meaning. Two shapes
- * reach it: a rule the platform's own policy language cannot express, and a rule that would
- * subtract from a path warden itself needs to establish the sandbox at all.
+ * reach it: a pattern naming a construct neither platform's policy language has - a character
+ * class, an alternation, a double quote - and a rule that would subtract from a path warden itself
+ * needs to establish the sandbox at all.
  */
 public class SandboxRuleRejectedException extends SandboxEstablishmentException {
 
@@ -21,7 +22,7 @@ public class SandboxRuleRejectedException extends SandboxEstablishmentException 
     this.targetPattern = targetPattern;
   }
 
-  /** The {@code targetPattern} of the rule that was refused. */
+  /** The pattern of the rule that was refused. */
   public String targetPattern() {
     return targetPattern;
   }

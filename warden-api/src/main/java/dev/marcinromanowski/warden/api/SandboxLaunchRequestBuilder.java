@@ -72,14 +72,14 @@ public final class SandboxLaunchRequestBuilder {
     return this;
   }
 
-  /** Adds an {@code ALLOW} filesystem rule for the given pattern and access kinds. */
-  public SandboxLaunchRequestBuilder allowFilesystem(String pattern, String reason, AccessKind... kinds) {
-    return filesystemRule(FilesystemRule.allow(pattern, reason, kinds));
+  /** Adds an {@code ALLOW} filesystem rule for the given target and access kinds. */
+  public SandboxLaunchRequestBuilder allowFilesystem(RulePath target, String reason, AccessKind... kinds) {
+    return filesystemRule(FilesystemRule.allow(target, reason, kinds));
   }
 
-  /** Adds a {@code DENY} filesystem rule for the given pattern and access kinds. */
-  public SandboxLaunchRequestBuilder denyFilesystem(String pattern, String reason, AccessKind... kinds) {
-    return filesystemRule(FilesystemRule.deny(pattern, reason, kinds));
+  /** Adds a {@code DENY} filesystem rule for the given target and access kinds. */
+  public SandboxLaunchRequestBuilder denyFilesystem(RulePath target, String reason, AccessKind... kinds) {
+    return filesystemRule(FilesystemRule.deny(target, reason, kinds));
   }
 
   /** Adds a filesystem rule. Rules are evaluated in the order they were added - first match wins. */

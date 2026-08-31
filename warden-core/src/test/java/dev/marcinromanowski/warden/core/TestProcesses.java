@@ -14,9 +14,16 @@ final class TestProcesses {
   }
 
   static SandboxExecResult run(List<String> command) throws IOException {
+    return run(command, "");
+  }
+
+  static SandboxExecResult run(List<String> command, String standardInput) throws IOException {
     Process process = new ProcessBuilder(command)
         .redirectErrorStream(true)
         .start();
+    try (var sink = process.getOutputStream()) {
+      sink.write(standardInput.getBytes(StandardCharsets.UTF_8));
+    }
     boolean finished = awaitTermination(process);
     if (!finished) {
       process.destroyForcibly();

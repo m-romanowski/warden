@@ -20,8 +20,8 @@ class SandboxLaunchRequestBuilderTest {
         .workingDirectory(new File("/tmp/work"))
         .sandboxRoot(Path.of(WORKSPACE_ROOT))
         .logFile(new File("/tmp/work/launch.log"))
-        .allowFilesystem("/tmp/workspace/**", "workspace root", AccessKind.READ, AccessKind.WRITE)
-        .denyFilesystem("**/*.pem", "credential material", AccessKind.READ, AccessKind.WRITE)
+        .allowFilesystem(RulePath.tree("/tmp/workspace"), "workspace root", AccessKind.READ, AccessKind.WRITE)
+        .denyFilesystem(RulePath.glob("**/*.pem"), "credential material", AccessKind.READ, AccessKind.WRITE)
         .allowNetwork("api.example.com", "remote service")
         .build();
 
@@ -29,8 +29,8 @@ class SandboxLaunchRequestBuilderTest {
         .containsExactly(COMMAND_NAME, "run");
     assertThat(request.filesystemRules())
         .containsExactly(
-            FilesystemRule.allow("/tmp/workspace/**", "workspace root", AccessKind.READ, AccessKind.WRITE),
-            FilesystemRule.deny("**/*.pem", "credential material", AccessKind.READ, AccessKind.WRITE)
+            FilesystemRule.allow(RulePath.tree("/tmp/workspace"), "workspace root", AccessKind.READ, AccessKind.WRITE),
+            FilesystemRule.deny(RulePath.glob("**/*.pem"), "credential material", AccessKind.READ, AccessKind.WRITE)
         );
     assertThat(request.networkRules())
         .containsExactly(NetworkRule.allowHost("api.example.com", "remote service"));
@@ -114,7 +114,7 @@ class SandboxLaunchRequestBuilderTest {
   @Test
   void filesystemRuleAcceptsAskDecision() {
     FilesystemRule rule = new FilesystemRule(
-        "**/*.env", Set.of(AccessKind.READ), Decision.ASK, "explicit ask example"
+        RulePath.glob("**/*.env"), Set.of(AccessKind.READ), Decision.ASK, "explicit ask example"
     );
 
     assertThat(rule.decision())

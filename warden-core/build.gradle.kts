@@ -12,10 +12,6 @@ dependencies {
   testImplementation(libs.assertj.core)
 }
 
-tasks.test {
-  inputs.file(rootProject.file("scripts/install-apparmor-bwrap-override.sh"))
-}
-
 tasks.register<Test>("benchmark") {
   description = "Runs real, wall-clock latency benchmarks"
   group = "verification"

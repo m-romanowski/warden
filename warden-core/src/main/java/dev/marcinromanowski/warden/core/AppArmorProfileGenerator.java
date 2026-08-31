@@ -18,8 +18,8 @@ import java.util.Optional;
 // filesystem walk, no prune heuristics, and has no mid-session drift gap.
 //
 // Unlike SeatbeltProfileGenerator, no regex translation is needed: AppArmor's own path-pattern
-// grammar already understands the glob subset used here natively (AppArmorGlobTranslator only
-// rejects unsafe syntax, it doesn't rewrite anything). AppArmor resolves a *single* overlapping
+// grammar already spells the supported wildcards the same way (AppArmorGlobTranslator only escapes
+// the literal characters around them). AppArmor resolves a *single* overlapping
 // allow/deny pair by set-subtraction, not last-clause-wins - confirmed empirically that emission
 // order never changes which one wins for that pair.
 //
@@ -36,6 +36,9 @@ import java.util.Optional;
 // (--unshare-net, a genuine kernel namespace boundary), not AppArmor's - this generator only ever
 // produces filesystem rules.
 final class AppArmorProfileGenerator {
+
+  private static final String INCLUDE_KEYWORD = "include";
+  private static final String TUNABLES_INCLUDE = "#include <tunables/global>\n\n";
 
   // Mirrors SeatbeltProfileGenerator's own bootstrap stance exactly: this sandbox's security
   // boundary is what a process can READ/WRITE, not which programs it's allowed to invoke - a
@@ -59,11 +62,10 @@ final class AppArmorProfileGenerator {
   // AppArmor resolves an overlapping allow/deny pair by set-subtraction at equal priority, so a
   // caller's deny beats any warden grant it covers, however broadly the deny was written. With
   // the bridge grant above in place, adding "deny /tmp/** r," makes /tmp/warden-sandbox-bridge/proxy.info
-  // unreadable, and the sandboxed process then cannot reach its own egress control plane. SecureTempFiles
-  // puts the per-session directory under java.io.tmpdir too, so the same rule takes out sandbox establishment
-  // itself. Reaching the clause needs nothing exotic: "**/tmp/**" is a shape a credential-blacklist author
-  // writes, and it covers "/tmp/**" under the java.nio.file PathMatcher semantics these patterns are authored
-  // against (which is also why this generator derives that root-level clause for a deny).
+  // unreadable, and the sandboxed process then cannot reach its own egress control plane. Reaching the
+  // clause needs nothing exotic: "**/tmp/**" is a shape a credential-blacklist author writes, and it
+  // covers "/tmp/**" under the java.nio.file PathMatcher semantics these patterns are authored against
+  // (which is also why this generator derives that root-level clause for a deny).
   //
   // A generated profile is an addition to whatever policy the machine already has and to whatever the
   // caller wrote - never a silent override of it. The qualifier existed precisely to win over a
@@ -118,7 +120,7 @@ final class AppArmorProfileGenerator {
   }
 
   static String generate(String profileName, List<FilesystemRule> filesystemRules) {
-    return generate(profileName, filesystemRules, Optional.empty(), Optional.empty());
+    return generate(profileName, filesystemRules, Optional.empty(), Optional.empty(), Optional.empty());
   }
 
   // sessionPaths, when present, names the individual files inside warden's own per-session scratch
@@ -141,6 +143,9 @@ final class AppArmorProfileGenerator {
   // bind of warden's own session directory - and, while the session tree carried "mrwix", copied
   // /bin/dash into it and executed it.
   //
+  // stackedLabel, when present, is the label a real launch's px transition lands the payload in -
+  // needed only for the signal rule below.
+  //
   // helperExecutable, when present, is a binary the bridge script runs by absolute path. The
   // bootstrap allowances cover the system locations a distribution would install it in and nothing
   // else, so a helper resolved from anywhere the embedder chose needs its own clause here. "rix"
@@ -150,7 +155,30 @@ final class AppArmorProfileGenerator {
       String profileName,
       List<FilesystemRule> filesystemRules,
       Optional<BwrapSessionPaths> sessionPaths,
-      Optional<Path> helperExecutable
+      Optional<Path> helperExecutable,
+      Optional<String> stackedLabel
+  ) {
+    return TUNABLES_INCLUDE + profileBlock(profileName, filesystemRules, sessionPaths, helperExecutable, stackedLabel);
+  }
+
+  static String profileBlock(
+      String profileName,
+      List<FilesystemRule> filesystemRules,
+      Optional<BwrapSessionPaths> sessionPaths,
+      Optional<Path> helperExecutable,
+      Optional<String> stackedLabel
+  ) {
+    return "profile " + Preconditions.nonBlank(profileName, "profileName") + " flags=(attach_disconnected) {\n"
+        + sessionProfileBody(profileName, filesystemRules, sessionPaths, helperExecutable, stackedLabel)
+        + "}\n";
+  }
+
+  static String sessionProfileBody(
+      String profileName,
+      List<FilesystemRule> filesystemRules,
+      Optional<BwrapSessionPaths> sessionPaths,
+      Optional<Path> helperExecutable,
+      Optional<String> stackedLabel
   ) {
     String requiredName = Preconditions.nonBlank(profileName, "profileName");
     Optional<BwrapSessionPaths> requiredSessionPaths = Preconditions.nonNull(sessionPaths, "sessionPaths");
@@ -158,18 +186,10 @@ final class AppArmorProfileGenerator {
     List<FilesystemRule> requiredRules = List.copyOf(Preconditions.nonNull(filesystemRules, "filesystemRules"));
     requireNoDenyOverReservedPaths(requiredRules, requiredSessionPaths, requiredHelper);
     StringBuilder profile = new StringBuilder();
-    profile.append("#include <tunables/global>\n\n")
-        .append("profile ")
-        .append(requiredName)
-        .append(" flags=(attach_disconnected) {\n")
-        .append(indent(BOOTSTRAP_ALLOWANCES))
-        .append(indent(sameProfileSignalAllowances(requiredName)));
+    profile.append(indent(BOOTSTRAP_ALLOWANCES))
+        .append(indent(sameProfileSignalAllowances(requiredName, stackedLabel)));
     requiredSessionPaths.ifPresent(paths -> appendReservedClauses(profile, paths));
-    requiredHelper.ifPresent(
-        executable -> profile.append("  ")
-            .append(executable)
-            .append(" rix,\n")
-    );
+    requiredHelper.ifPresent(executable -> appendReservedClause(profile, executable, "rix"));
     // Higher-priority literal ALLOW patterns seen so far, in the caller's own priority order -
     // used to carve exceptions out of a later, lower-priority DENY glob that would otherwise
     // silently re-cover them (see AppArmorDenyGlobExclusion's own header for the full "why" and the
@@ -178,12 +198,11 @@ final class AppArmorProfileGenerator {
     List<String> higherPriorityLiteralAllows = new ArrayList<>();
     for (FilesystemRule rule : requiredRules) {
       appendRuleClause(profile, rule, higherPriorityLiteralAllows);
-      String translatedPattern = AppArmorGlobTranslator.toAppArmorPattern(rule.targetPattern());
+      String translatedPattern = AppArmorGlobTranslator.toAppArmorPattern(rule.target());
       if (effectiveDecisionIsAllow(rule.decision()) && isLiteralPattern(translatedPattern)) {
         higherPriorityLiteralAllows.add(translatedPattern);
       }
     }
-    profile.append("}\n");
     return profile.toString();
   }
 
@@ -193,11 +212,13 @@ final class AppArmorProfileGenerator {
   //
   // Scoped to this profile's own label rather than granted outright, so it permits the confined
   // process signalling itself and its own children and nothing else. Two spellings because the peer
-  // label differs by how the profile was entered: the bare name under aa-exec, and the stacked
-  // "bwrap//&unpriv_bwrap//&<name>" under the px transition a real launch takes.
-  private static String sameProfileSignalAllowances(String profileName) {
+  // label differs by how the profile was entered: the bare name when a caller enters it directly,
+  // and the full stacked label under the px transition a real launch takes. That stacked spelling
+  // has to be the one the kernel renders, component-sorted - see AppArmorSessionProfileNames.
+  private static String sameProfileSignalAllowances(String profileName, Optional<String> stackedLabel) {
     return "signal peer=" + profileName + ",\n"
-        + "signal peer=bwrap//&unpriv_bwrap//&" + profileName + ",\n";
+        + stackedLabel.map(label -> "signal peer=" + label + ",\n")
+            .orElse("");
   }
 
   private static void appendReservedClauses(StringBuilder profile, BwrapSessionPaths paths) {
@@ -213,7 +234,7 @@ final class AppArmorProfileGenerator {
 
   private static void appendReservedClause(StringBuilder profile, Path path, String mode) {
     profile.append("  ")
-        .append(path)
+        .append(AppArmorPathEscaping.escapeLiteralPath(path.toString()))
         .append(' ')
         .append(mode)
         .append(",\n");
@@ -243,7 +264,7 @@ final class AppArmorProfileGenerator {
       if (effectiveDecisionIsAllow(rule.decision()) || !subtractsFromWardensOwnAccess(rule)) {
         continue;
       }
-      String pattern = AppArmorGlobTranslator.toAppArmorPattern(rule.targetPattern());
+      String pattern = AppArmorGlobTranslator.toAppArmorPattern(rule.target());
       List<String> spellings = new ArrayList<>();
       spellings.add(pattern);
       spellings.addAll(AppArmorGlobTranslator.zeroSegmentForms(pattern));
@@ -270,22 +291,22 @@ final class AppArmorProfileGenerator {
     return new SandboxRuleRejectedException(
         "A supplied DENY rule covers a path warden itself needs to establish the sandbox, so the"
             + " launch is refused rather than the rule being silently overridden. warden reserves"
-            + " " + BWRAP_BRIDGE_DIRECTORY + " and a per-session scratch directory under the system"
-            + " temporary directory, and reaches this path through them: " + reservedPath
+            + " " + BWRAP_BRIDGE_DIRECTORY + " and a per-session directory under"
+            + " " + BwrapSessionStore.SESSIONS_DIRECTORY + ", and reaches this path through them: " + reservedPath
             + ". Narrow the rule so it does not cover that path - a deny meant for the confined"
             + " program's reach into your own filesystem does not need to name warden's own control"
             + " plane, and warden's egress and mount behaviour are configured through network rules"
-            + " and path mounts instead. Offending rule: pattern=" + rule.targetPattern()
+            + " and path mounts instead. Offending rule: pattern=" + rule.target().pattern()
             + ", kinds=" + rule.accessKinds() + ", reason=" + rule.reason(),
-        rule.targetPattern()
+        rule.target().pattern()
     );
   }
 
   private static void appendRuleClause(StringBuilder profile, FilesystemRule rule, List<String> higherPriorityLiteralAllows) {
-    String pattern = AppArmorGlobTranslator.toAppArmorPattern(rule.targetPattern());
+    String pattern = AppArmorGlobTranslator.toAppArmorPattern(rule.target());
     boolean isAllow = effectiveDecisionIsAllow(rule.decision());
     String mode = accessMode(rule.accessKinds(), isAllow);
-    String reason = requireSingleLineReason(rule.reason());
+    String reason = requireInertReason(rule.reason());
     String clauseVerb = isAllow ? "allow" : "deny";
     for (Spelling spelling : spellings(pattern, mode, isAllow, grantsDirectoryListing(rule))) {
       List<String> patterns = isAllow
@@ -383,7 +404,7 @@ final class AppArmorProfileGenerator {
   // specific exception at a time) doesn't need more than this.
   private static List<String> denyPatternsExcludingHigherPriorityAllows(String denyPattern, List<String> higherPriorityLiteralAllows) {
     for (String literalAllow : higherPriorityLiteralAllows) {
-      if (!matches(denyPattern, literalAllow)) {
+      if (!matches(denyPattern, AppArmorPathEscaping.unescape(literalAllow))) {
         continue;
       }
       Optional<List<String>> excluded = AppArmorDenyGlobExclusion.excludeLiteralPath(denyPattern, literalAllow);
@@ -396,7 +417,7 @@ final class AppArmorProfileGenerator {
 
   private static boolean matches(String appArmorPattern, String literalCandidate) {
     PathMatcher matcher = FileSystems.getDefault()
-        .getPathMatcher("glob:" + appArmorPattern);
+        .getPathMatcher("glob:" + AppArmorPathEscaping.toJavaGlobPattern(appArmorPattern));
     return matcher.matches(Path.of(literalCandidate));
   }
 
@@ -410,6 +431,13 @@ final class AppArmorProfileGenerator {
   // caller's own pattern shape (a bare directory path vs. a `/**` suffix - see
   // AppArmorProfileGeneratorEnforcementTest for the empirically-verified distinction), not by
   // anything this generator decides.
+  //
+  // On an ALLOW that is where the two platforms part company, and it cannot be closed from here.
+  // Seatbelt maps the kind to file-read-metadata, so a rule naming a FILE grants its metadata and
+  // refuses its bytes there. AppArmor's narrowest read letter is the one that reads contents, so the
+  // same rule hands the bytes out here. Both sides assert it in their own enforcement test rather
+  // than claiming a parity that does not exist. On a DENY there is no divergence: SeatbeltProfileGenerator
+  // emits the whole read operation, matching what "r" already takes away here.
   //
   // EXECUTE emits "ix" on an allow and a bare "x" on a deny, and the decision is a parameter here
   // for exactly that reason. An allow has to say which profile the child runs under - "i" (inherit)
@@ -453,12 +481,24 @@ final class AppArmorProfileGenerator {
     return decision == Decision.ALLOW;
   }
 
-  // rule.reason() is interpolated after a '#' AppArmor line comment. An embedded newline would
-  // let whatever follows it be parsed as live AppArmor syntax rather than comment text - the same
-  // class of injection risk AppArmorGlobTranslator already guards against for targetPattern.
-  private static String requireSingleLineReason(String reason) {
+  // rule.reason() is interpolated after a '#' AppArmor line comment, which is not the inert text it
+  // looks like. A newline lets whatever follows it be parsed as live AppArmor syntax. A brace closes
+  // the profile block the privileged helper opened, and the next one opens a profile of the caller's
+  // choosing - which is the whole bound that helper rests on. And "include" is honoured by the
+  // parser wherever it appears, comment or not: measured, "/tmp/z r, #include <abstractions/x>"
+  // pulled the abstraction in, so a reason carrying that token could name a file to splice.
+  private static String requireInertReason(String reason) {
     if (reason.indexOf('\n') >= 0 || reason.indexOf('\r') >= 0) {
       throw new IllegalArgumentException("Sandbox rule reason must not contain a line break: " + reason);
+    }
+    if (reason.indexOf('{') >= 0 || reason.indexOf('}') >= 0) {
+      throw new IllegalArgumentException("Sandbox rule reason must not contain a brace: " + reason);
+    }
+    if (reason.contains(INCLUDE_KEYWORD)) {
+      throw new IllegalArgumentException(
+          "Sandbox rule reason must not contain \"" + INCLUDE_KEYWORD + "\", which AppArmor honours"
+              + " inside a comment: " + reason
+      );
     }
     return reason;
   }

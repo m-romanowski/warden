@@ -22,10 +22,6 @@ final class SecureTempFiles {
     );
   }
 
-  static Path createOwnerOnlyTempDirectory(String prefix) throws IOException {
-    return Files.createTempDirectory(Preconditions.nonBlank(prefix, "prefix"), ownerOnlyDirectoryAttributes());
-  }
-
   private static FileAttribute<?>[] ownerOnlyFileAttributes() {
     if (doesNotSupportPosixPermissions()) {
       return new FileAttribute<?>[0];
@@ -33,17 +29,6 @@ final class SecureTempFiles {
     return new FileAttribute<?>[] {
         PosixFilePermissions.asFileAttribute(
             EnumSet.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE)
-        )
-    };
-  }
-
-  private static FileAttribute<?>[] ownerOnlyDirectoryAttributes() {
-    if (doesNotSupportPosixPermissions()) {
-      return new FileAttribute<?>[0];
-    }
-    return new FileAttribute<?>[] {
-        PosixFilePermissions.asFileAttribute(
-            EnumSet.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE, PosixFilePermission.OWNER_EXECUTE)
         )
     };
   }

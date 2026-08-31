@@ -6,8 +6,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import dev.marcinromanowski.warden.api.AccessKind;
 import dev.marcinromanowski.warden.api.Decision;
 import dev.marcinromanowski.warden.api.FilesystemRule;
-import dev.marcinromanowski.warden.api.SandboxEstablishmentException;
-import dev.marcinromanowski.warden.api.SandboxRuleRejectedException;
+import dev.marcinromanowski.warden.api.RulePath;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -59,7 +58,7 @@ class SeatbeltProfileGeneratorTest {
 
   @Test
   void emitsAllowClauseForAllowedWorkspaceRoot() {
-    FilesystemRule workspaceWrite = rule(Set.of(AccessKind.WRITE), WORKSPACE_ROOT_PATTERN, Decision.ALLOW);
+    FilesystemRule workspaceWrite = rule(Set.of(AccessKind.WRITE), RulePath.glob(WORKSPACE_ROOT_PATTERN), Decision.ALLOW);
 
     String profile = generate(List.of(workspaceWrite));
 
@@ -69,8 +68,8 @@ class SeatbeltProfileGeneratorTest {
 
   @Test
   void denyCarveOutInsideBroaderAllowEmitsTheDenyClauseAfterTheAllowClause() {
-    FilesystemRule denyCredential = rule(Set.of(AccessKind.READ), "**/.env", Decision.DENY);
-    FilesystemRule allowWorkspace = rule(Set.of(AccessKind.READ), WORKSPACE_ROOT_PATTERN, Decision.ALLOW);
+    FilesystemRule denyCredential = rule(Set.of(AccessKind.READ), RulePath.glob("**/.env"), Decision.DENY);
+    FilesystemRule allowWorkspace = rule(Set.of(AccessKind.READ), RulePath.glob(WORKSPACE_ROOT_PATTERN), Decision.ALLOW);
     // First-match-wins priority order: narrower DENY first, broader ALLOW second. SBPL is
     // last-match-wins, so the generator must emit these in REVERSE - the ALLOW clause before the
     // DENY clause - for the DENY to actually win. Asserted here as clause order, and separately
@@ -91,7 +90,7 @@ class SeatbeltProfileGeneratorTest {
 
   @Test
   void asksFoldToDenyBecauseThereIsNoSynchronousApprovalChannelAtTheSyscallBoundary() {
-    FilesystemRule askRule = rule(Set.of(AccessKind.WRITE), "/workspace/scratch/**", Decision.ASK);
+    FilesystemRule askRule = rule(Set.of(AccessKind.WRITE), RulePath.glob("/workspace/scratch/**"), Decision.ASK);
 
     String profile = generate(List.of(askRule));
 
@@ -101,56 +100,87 @@ class SeatbeltProfileGeneratorTest {
   }
 
   @Test
-  void externalDirectoryAloneFoldsIntoReadClauseEmission() {
+  void externalDirectoryAloneGrantsTraversalWithoutTheListing() {
     FilesystemRule externalDirectoryOnly = rule(
-        Set.of(AccessKind.EXTERNAL_DIRECTORY), "/some/external/root/**", Decision.ALLOW
+        Set.of(AccessKind.EXTERNAL_DIRECTORY), RulePath.literal("/some/external/root"), Decision.ALLOW
     );
 
     String profile = generate(List.of(externalDirectoryOnly));
 
     assertThat(profile)
-        .contains(allowClause(FILE_READ_OPERATION, "/some/external/root/**"));
+        .contains(allowClause("file-read-metadata", "/some/external/root"))
+        .doesNotContain(allowClause(FILE_READ_OPERATION, "/some/external/root"));
   }
 
   @Test
-  void executeAloneFoldsIntoReadClauseEmissionBecauseSbplHasNoPerPathExecuteOperation() {
-    FilesystemRule executableOnly = rule(Set.of(AccessKind.EXECUTE), "/tools/backend", Decision.ALLOW);
+  void readAndExternalDirectoryTogetherGrantTheListingTheReadAsksFor() {
+    FilesystemRule both = rule(
+        Set.of(AccessKind.READ, AccessKind.EXTERNAL_DIRECTORY), RulePath.literal("/some/external/root"), Decision.ALLOW
+    );
+
+    String profile = generate(List.of(both));
+
+    assertThat(profile)
+        .contains(allowClause(FILE_READ_OPERATION, "/some/external/root"))
+        .doesNotContain(allowClause("file-read-metadata", "/some/external/root"));
+  }
+
+  @Test
+  void higherPriorityReadDenyOutranksLowerPriorityExternalDirectoryAllowOverTheSamePath() {
+    // Both name file-read-metadata, one through file-read*. Emitting them in separate passes would
+    // decide this by pass order instead of by priority, and the deny would lose its metadata half.
+    List<FilesystemRule> rules = List.of(
+        rule(Set.of(AccessKind.READ), RulePath.glob("/tree/**"), Decision.DENY),
+        rule(Set.of(AccessKind.EXTERNAL_DIRECTORY), RulePath.glob("/tree/**"), Decision.ALLOW)
+    );
+
+    String profile = generate(rules);
+
+    assertThat(profile.indexOf(denyClause(FILE_READ_OPERATION, "/tree/**")))
+        .as("the higher-priority deny must be the last matching clause, since SBPL decides by"
+            + " clause order")
+        .isGreaterThan(profile.indexOf(allowClause("file-read-metadata", "/tree/**")));
+  }
+
+  @Test
+  void executeGetsItsOwnOperationRatherThanTheReadClause() {
+    FilesystemRule executableOnly = rule(Set.of(AccessKind.EXECUTE), RulePath.literal("/tools/backend"), Decision.ALLOW);
 
     String profile = generate(List.of(executableOnly));
 
     assertThat(profile)
-        .contains(allowClause(FILE_READ_OPERATION, "/tools/backend"));
+        .contains(allowClause("process-exec", "/tools/backend"))
+        .as("EXECUTE alone grants no read on either platform - a script needs READ as well,"
+            + " because its interpreter has to open it")
+        .doesNotContain(allowClause(FILE_READ_OPERATION, "/tools/backend"));
   }
 
   @Test
-  void refusesADenyOnExecuteBecauseTheOnlyClauseSbplCouldEmitWouldDenyTheReadToo() {
-    List<FilesystemRule> rules = List.of(rule(Set.of(AccessKind.EXECUTE), "/tools/backend", Decision.DENY));
+  void denyOnExecuteAloneRefusesTheExecAndLeavesTheReadAlone() {
+    List<FilesystemRule> rules = List.of(rule(Set.of(AccessKind.EXECUTE), RulePath.literal("/tools/backend"), Decision.DENY));
 
-    assertThatThrownBy(() -> generate(rules))
-        .as("a typed refusal, so an embedder's own establishment handling catches it rather than"
-            + " letting a bare IllegalArgumentException escape to a generic catch")
-        .isInstanceOf(SandboxRuleRejectedException.class)
-        .isInstanceOf(SandboxEstablishmentException.class)
-        .hasMessageContaining("/tools/backend")
-        .as("the advice has to be something the author can do, and neither WorkspaceAccessRule nor"
-            + " FilesystemRule carries a platform, so it cannot be \"keep it out of the macOS set\"")
-        .hasMessageContaining("Add READ to this rule");
+    String profile = generate(rules);
+
+    assertThat(profile)
+        .contains(denyClause("process-exec", "/tools/backend"))
+        .doesNotContain(denyClause(FILE_READ_OPERATION, "/tools/backend"));
   }
 
   @Test
-  void acceptsADenyOnReadAndExecuteTogetherAndEmitsTheReadDeny() {
-    FilesystemRule unreadable = rule(Set.of(AccessKind.READ, AccessKind.EXECUTE), "/tools/**/*.sh", Decision.DENY);
+  void acceptsDenyOnReadAndExecuteTogetherAndEmitsBoth() {
+    FilesystemRule unreadable = rule(Set.of(AccessKind.READ, AccessKind.EXECUTE), RulePath.glob("/tools/**/*.sh"), Decision.DENY);
 
     String profile = generate(List.of(unreadable));
 
     assertThat(profile)
-        .contains(denyClause(FILE_READ_OPERATION, "/tools/**/*.sh"));
+        .contains(denyClause(FILE_READ_OPERATION, "/tools/**/*.sh"))
+        .contains(denyClause("process-exec", "/tools/**/*.sh"));
   }
 
   @Test
   void lockOnDenyContributesNoClauseForTheSameReasonAnAllowDoesNot() {
-    FilesystemRule unlockable = rule(Set.of(AccessKind.LOCK), "/state/**", Decision.DENY);
-    FilesystemRule readOnlyDeny = rule(Set.of(AccessKind.READ), "/state/**", Decision.DENY);
+    FilesystemRule unlockable = rule(Set.of(AccessKind.LOCK), RulePath.glob("/state/**"), Decision.DENY);
+    FilesystemRule readOnlyDeny = rule(Set.of(AccessKind.READ), RulePath.glob("/state/**"), Decision.DENY);
 
     String withLockRule = generate(List.of(unlockable, readOnlyDeny));
 
@@ -163,10 +193,10 @@ class SeatbeltProfileGeneratorTest {
   @Test
   void lockContributesNoClauseBecauseMacOsMediatesLockingThroughTheDescriptor() {
     FilesystemRule lockable = rule(
-        Set.of(AccessKind.READ, AccessKind.WRITE, AccessKind.LOCK), "/state/**", Decision.ALLOW
+        Set.of(AccessKind.READ, AccessKind.WRITE, AccessKind.LOCK), RulePath.glob("/state/**"), Decision.ALLOW
     );
     FilesystemRule sameWithoutLock = rule(
-        Set.of(AccessKind.READ, AccessKind.WRITE), "/state/**", Decision.ALLOW
+        Set.of(AccessKind.READ, AccessKind.WRITE), RulePath.glob("/state/**"), Decision.ALLOW
     );
 
     String withLockRule = generate(List.of(lockable));
@@ -194,7 +224,7 @@ class SeatbeltProfileGeneratorTest {
   @Test
   void rejectsReasonContainingLineBreak() {
     FilesystemRule ruleWithNewlineInReason = new FilesystemRule(
-        "/workspace/**",
+        RulePath.glob("/workspace/**"),
         Set.of(AccessKind.READ),
         Decision.ALLOW,
         "harmless\n(allow file-read* (regex #\"^.*$\"))"
@@ -210,14 +240,14 @@ class SeatbeltProfileGeneratorTest {
   }
 
   private static String allowClause(String sbplOperation, String pattern) {
-    return "(allow " + sbplOperation + " (regex #\"" + SeatbeltGlobTranslator.toRegex(pattern) + "\"))";
+    return "(allow " + sbplOperation + " (regex #\"" + SeatbeltGlobTranslator.toRegex(RulePath.glob(pattern)) + "\"))";
   }
 
   private static String denyClause(String sbplOperation, String pattern) {
-    return "(deny " + sbplOperation + " (regex #\"" + SeatbeltGlobTranslator.toRegex(pattern) + "\"))";
+    return "(deny " + sbplOperation + " (regex #\"" + SeatbeltGlobTranslator.toRegex(RulePath.glob(pattern)) + "\"))";
   }
 
-  private static FilesystemRule rule(Set<AccessKind> kinds, String pattern, Decision decision) {
-    return new FilesystemRule(pattern, kinds, decision, "test reason");
+  private static FilesystemRule rule(Set<AccessKind> kinds, RulePath target, Decision decision) {
+    return new FilesystemRule(target, kinds, decision, "test reason");
   }
 }

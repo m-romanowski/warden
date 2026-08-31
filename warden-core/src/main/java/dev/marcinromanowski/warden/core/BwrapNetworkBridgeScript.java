@@ -27,10 +27,12 @@ final class BwrapNetworkBridgeScript {
   }
 
   static String generate(Path inSandboxBridgeDirectory, Path socatExecutable, Optional<Integer> controlPlanePort) {
-    String socat = Preconditions.nonNull(socatExecutable, "socatExecutable")
-        .toString();
-    Path proxySocketPath = inSandboxBridgeDirectory.resolve(PROXY_SOCKET_FILE_NAME);
-    Path controlSocketPath = inSandboxBridgeDirectory.resolve(CONTROL_SOCKET_FILE_NAME);
+    String socat = shellQuoted(
+        Preconditions.nonNull(socatExecutable, "socatExecutable")
+            .toString()
+    );
+    String proxySocketPath = shellQuoted(inSandboxBridgeDirectory.resolve(PROXY_SOCKET_FILE_NAME));
+    String controlSocketPath = shellQuoted(inSandboxBridgeDirectory.resolve(CONTROL_SOCKET_FILE_NAME));
     StringBuilder script = new StringBuilder();
     script.append("#!/bin/sh\n")
         .append("set -e\n\n")
@@ -77,5 +79,13 @@ final class BwrapNetworkBridgeScript {
         .append("fi\n\n")
         .append("exec \"$@\"\n");
     return script.toString();
+  }
+
+  private static String shellQuoted(Path path) {
+    return shellQuoted(path.toString());
+  }
+
+  private static String shellQuoted(String value) {
+    return "'" + value.replace("'", "'\\''") + "'";
   }
 }

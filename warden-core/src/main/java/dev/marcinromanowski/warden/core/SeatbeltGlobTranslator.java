@@ -1,72 +1,56 @@
 package dev.marcinromanowski.warden.core;
 
-// Translates the glob subset FilesystemRule patterns use (**, *, literal segments,
-// ${user.home}) into an SBPL (regex #"...") body. Bracket/brace character classes are rejected
-// rather than silently mistranslated, since a wrong translation would be a silent security bug.
-// '"' and '\' are rejected for a second, sharper reason: the emitted regex is embedded in an
-// SBPL string literal (#"..."), so an unescaped '"' would close that literal early and let
-// whatever follows be parsed as live SBPL syntax rather than regex content. Rejecting outright,
-// not attempting to escape, since this generator has no way to prove escaping is correctly
-// interpreted by libsandbox's own regex-literal grammar.
+import dev.marcinromanowski.warden.api.RulePath;
+
+// Translates a RulePath into an SBPL regex literal body, #"...".
+//
+// Every character a real path can hold is carried by escaping it as a regex metacharacter where the
+// regex engine would otherwise read it as syntax. Measured through the real sandbox-exec for each of
+// them, against the named path and two decoy directories: a space, tab, line break, "#", ",", "!",
+// "[", "]", "{", "}", "\", a single quote and non-ASCII all reach exactly the path they name. A
+// backslash needs the escaped spelling specifically - written raw it collapses and the rule lands on
+// a different directory, measured, which is the same failure AppArmor has with it.
+//
+// "*" and "?" are escaped here too, and that is not a detail. They are the pattern language, so a
+// caller's wildcard never arrives as a character at all - it arrives as a wildcard token from
+// GlobPattern, and a "*" that does arrive as a character is one a real directory name holds.
+// Measured: a workspace named "My*Project" spelled with the wildcard live granted three sibling
+// directories the rule never named, on both platforms.
+//
+// A double quote is the one character that cannot be carried, and GlobPattern refuses it. The
+// #"..." literal is a raw passthrough terminated by the first quote in it: \" ends the literal
+// early and leaves the rest of the clause to be read as live profile syntax, \x22 is not
+// interpreted, and a character class around it matches something else entirely. All three measured.
+// The plain-string spelling of the same filter, (regex "..."), does accept an escaped quote - and is
+// not used, because its string literal eats one level of backslash before the regex sees it:
+// measured, an escaped "." there became "any character" and granted a decoy directory the rule never
+// named. A form that turns a missed escape into a silent over-grant is the wrong place to gain one
+// character.
 final class SeatbeltGlobTranslator {
 
-  private static final String USER_HOME_TOKEN = "${user.home}";
-  private static final String UNSUPPORTED_GLOB_CHARACTERS = "[]{}\"\\";
-  private static final String REGEX_METACHARACTERS = "^$.|+()[]{}";
-  private static final char GLOB_WILDCARD = '*';
-  private static final char GLOB_SINGLE_CHARACTER = '?';
+  private static final String REGEX_METACHARACTERS = "^$.|+*?()[]{}\\";
 
   private SeatbeltGlobTranslator() {
   }
 
-  static String toRegex(String globPattern) {
-    String expanded = expandUserHome(Preconditions.nonBlank(globPattern, "globPattern"));
-    rejectUnsupportedSyntax(expanded);
+  static String toRegex(RulePath target) {
     StringBuilder regex = new StringBuilder("^");
-    int index = 0;
-    while (index < expanded.length()) {
-      char current = expanded.charAt(index);
-      boolean isDoubleWildcard = current == GLOB_WILDCARD
-          && index + 1 < expanded.length()
-          && expanded.charAt(index + 1) == GLOB_WILDCARD;
-      if (isDoubleWildcard) {
-        regex.append(".*");
-        index += 2;
-      } else if (current == GLOB_WILDCARD) {
-        regex.append("[^/]*");
-        index += 1;
-      } else if (current == GLOB_SINGLE_CHARACTER) {
-        regex.append("[^/]");
-        index += 1;
-      } else if (REGEX_METACHARACTERS.indexOf(current) >= 0) {
-        regex.append('\\')
-            .append(current);
-        index += 1;
-      } else {
-        regex.append(current);
-        index += 1;
+    for (GlobToken token : GlobPattern.parse(Preconditions.nonNull(target, "target").pattern())) {
+      switch (token) {
+        case GlobToken.Literal literal -> appendLiteral(regex, literal.codePoint());
+        case GlobToken.Wildcard.ANY_PATH -> regex.append(".*");
+        case GlobToken.Wildcard.ANY_SEGMENT -> regex.append("[^/]*");
+        case GlobToken.Wildcard.SINGLE_CHARACTER -> regex.append("[^/]");
       }
     }
     return regex.append('$')
         .toString();
   }
 
-  private static void rejectUnsupportedSyntax(String pattern) {
-    for (int index = 0; index < pattern.length(); index++) {
-      if (UNSUPPORTED_GLOB_CHARACTERS.indexOf(pattern.charAt(index)) >= 0) {
-        String message = "Unsupported character in sandbox rule pattern (bracket/brace classes are"
-            + " not translated; '\"' and '\\' are rejected as an SBPL string-literal injection risk): "
-            + pattern;
-        throw new IllegalArgumentException(message);
-      }
+  private static void appendLiteral(StringBuilder regex, int codePoint) {
+    if (REGEX_METACHARACTERS.indexOf(codePoint) >= 0) {
+      regex.append('\\');
     }
-  }
-
-  private static String expandUserHome(String pattern) {
-    if (!pattern.contains(USER_HOME_TOKEN)) {
-      return pattern;
-    }
-    String userHome = Preconditions.nonBlank(System.getProperty("user.home"), "user.home");
-    return pattern.replace(USER_HOME_TOKEN, userHome);
+    regex.appendCodePoint(codePoint);
   }
 }

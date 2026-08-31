@@ -1,44 +1,35 @@
 package dev.marcinromanowski.warden.core;
 
+import dev.marcinromanowski.warden.api.RulePath;
 import java.util.ArrayList;
 import java.util.List;
 
-// AppArmor's own path-pattern grammar already understands the glob subset FilesystemRule
-// patterns use (**, *, literal segments, ${user.home}) natively - unlike Seatbelt's SBPL, which
-// only accepts a full regex, AppArmor needs no translation at all for these shapes. Empirically
-// confirmed on a real kernel: '.' and '(' ')' are literal characters here (a `*.env` pattern does
-// not match `secretXenv`), not regex metacharacters - so nothing needs escaping for those.
-// Bracket/brace character classes ([...], {...}) are rejected rather than passed through, since
-// AppArmor gives them real (different) meaning and no bundled or operator rule in this codebase
-// uses them - a wrong assumption about that meaning would be a silent security bug. ',' and a
-// line break are rejected because AppArmor rule syntax is unquoted and comma/newline-terminated
-// (`<pattern> <access-mode>,`, `# comment` to end of line) - an unescaped occurrence in an
-// untrusted pattern could inject new rule syntax or comment out the rest of a line.
+// Turns a RulePath into a pattern an AppArmor clause can carry.
 //
-// '\' is rejected for a third reason, and SeatbeltGlobTranslator already rejects it, so accepting
-// it here made one rule set mean two different things. '\' is a legal character in a Linux
-// filename and callers interpolate real paths into patterns, but AppArmor reads it as an escape:
-// measured on a real kernel, a rule set scoped to a directory literally named "work\space" is
-// parsed as naming "workspace" instead, so every clause built from that root - the tree-wide allow
-// and the denies carved out of it alike - lands on a different real directory. The confined
-// process was granted read-write on that other directory, which no rule named, and refused every
-// write inside the workspace the sandbox was built for. A component ending in '\' is worse still:
-// apparmor_parser rejects the whole profile ("syntax error, unexpected TOK_END_OF_RULE"), which
-// reaches the caller as a failed launch rather than a rejected rule, and the same pattern makes
-// java.nio.file's own glob compiler throw PatternSyntaxException ("No character to escape").
+// AppArmor's own path-pattern grammar spells the supported wildcards exactly as the rule language
+// does ("**", "*", "?") - unlike Seatbelt's SBPL, which takes a full regex, there is no wildcard
+// translation to do here. What there is to do is make the literal characters of the pattern survive
+// AppArmor's unquoted, comma-terminated, comment-to-end-of-line rule syntax, which
+// AppArmorPathEscaping does per byte. GlobPattern decides which characters those are, and refuses
+// what neither platform can carry.
 final class AppArmorGlobTranslator {
 
-  private static final String USER_HOME_TOKEN = "${user.home}";
-  private static final String UNSUPPORTED_PATTERN_CHARACTERS = "[]{},\\";
   private static final String RECURSIVE_ANYWHERE_PREFIX = "/**/";
 
   private AppArmorGlobTranslator() {
   }
 
-  static String toAppArmorPattern(String globPattern) {
-    String expanded = expandUserHome(Preconditions.nonBlank(globPattern, "globPattern"));
-    rejectUnsupportedSyntax(expanded);
-    return absolute(expanded);
+  static String toAppArmorPattern(RulePath target) {
+    StringBuilder pattern = new StringBuilder();
+    for (GlobToken token : GlobPattern.parse(Preconditions.nonNull(target, "target").pattern())) {
+      switch (token) {
+        case GlobToken.Literal literal -> AppArmorPathEscaping.appendLiteral(pattern, literal.codePoint());
+        case GlobToken.Wildcard.ANY_PATH -> pattern.append("**");
+        case GlobToken.Wildcard.ANY_SEGMENT -> pattern.append('*');
+        case GlobToken.Wildcard.SINGLE_CHARACTER -> pattern.append('?');
+      }
+    }
+    return absolute(pattern.toString());
   }
 
   // FilesystemRule callers commonly express "this filename anywhere in the tree" as a
@@ -100,26 +91,5 @@ final class AppArmorGlobTranslator {
       }
     }
     return List.copyOf(forms);
-  }
-
-  private static void rejectUnsupportedSyntax(String pattern) {
-    for (int index = 0; index < pattern.length(); index++) {
-      char current = pattern.charAt(index);
-      if (UNSUPPORTED_PATTERN_CHARACTERS.indexOf(current) >= 0 || current == '\n' || current == '\r') {
-        String message = "Unsupported character in sandbox rule pattern (bracket/brace classes are"
-            + " not translated, ',' and line breaks are rejected as an AppArmor rule-syntax"
-            + " injection risk, and '\\' is rejected because AppArmor reads it as an escape and"
-            + " would scope the rule to a different path than the one written): " + pattern;
-        throw new IllegalArgumentException(message);
-      }
-    }
-  }
-
-  private static String expandUserHome(String pattern) {
-    if (!pattern.contains(USER_HOME_TOKEN)) {
-      return pattern;
-    }
-    String userHome = Preconditions.nonBlank(System.getProperty("user.home"), "user.home");
-    return pattern.replace(USER_HOME_TOKEN, userHome);
   }
 }

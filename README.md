@@ -83,23 +83,33 @@ sequenceDiagram
     participant Target as unique target binary<br/>(a fresh per-session /bin/sh copy)
     participant Sandboxed as real sandboxed command
 
-    Caller->>Caller: copy /bin/sh to a fresh,<br/>unique per-session path
-    Caller->>Kernel: generate + load this session's<br/>own AppArmor filesystem profile
-    Caller->>Kernel: append "px target -> bwrap//&unpriv_bwrap//&profile,"<br/>to the local override, reload it
-    Caller->>Bwrap: exec(bwrap, ...flags, -- unique-target, bridge-script, command)
-    Note over Bwrap,Kernel: confined by Ubuntu's own official<br/>/usr/bin/bwrap profile
+    Caller->>Caller: copy /bin/sh and the caller's bwrap<br/>to fresh, unique per-session paths
+    Caller->>Kernel: generate + load one file holding this session's<br/>bwrap profile, its unprivileged twin,<br/>and its filesystem profile
+    Caller->>Bwrap: exec(session bwrap copy, ...flags, -- unique-target, bridge-script, command)
+    Note over Bwrap,Kernel: confined by warden's own profile,<br/>attached to that session's bwrap path
     Bwrap->>Bwrap: create new user+mount+net<br/>namespaces (--unshare-net)
     Bwrap->>Target: exec(unique-target-binary)
-    Kernel->>Kernel: px rule matches this exact path,<br/>stacks: bwrap // &unpriv_bwrap // &profile
+    Kernel->>Kernel: px rule matches this exact path,<br/>stacks: bwrap // &unpriv // &profile
     Target->>Sandboxed: exec(bridge-script, then the real command)
     Note over Sandboxed,Kernel: every filesystem access from here on is evaluated<br/>lazily against the full stacked profile
 ```
 
-The unique per-session path is what makes the stacking rule apply to exactly this one
-launch and no other concurrent `bwrap` invocation on the machine - the kernel's own
-`no_new_privs` exec-time rule only permits the transition if the currently-active
-profile's base component literally matches, which is why this can't just be a single
-static rule shared across sessions.
+**warden brings its own bwrap profile rather than extending the distribution's.** An
+AppArmor profile attaches by resolved exec path, and Ubuntu's `bwrap-userns-restrict`
+names `/usr/bin/bwrap`. A caller supplying its own bwrap - a vendored copy, the normal
+case for an embedder that will not trust `PATH` - is therefore covered by no vendor
+profile at all. Where `kernel.apparmor_restrict_unprivileged_userns` is on, that
+launch fails loudly. Where an administrator has turned it off, it succeeds and **the
+payload runs unconfined**.
+
+The unique per-session paths are what make a session's policy apply to exactly that
+session. They are not a convenience: two profiles attached to one exec path attach
+*neither* (measured - the launch fails as if unconfined), so a shared bwrap path cannot
+carry per-session rules. And the transition into the filesystem profile is `px`, naming
+that profile, rather than the `pix` the vendor profile uses: `pix` falls back to inherit
+when nothing attaches, which measured as a payload running under the two permissive
+profiles alone and reading paths its own rules denied. With `px` the exec is refused and
+the payload never starts.
 
 **AppArmor's own rule-resolution semantics are pure set subtraction, not
 specificity-aware - and that shaped the glob-rewriting algorithm here.** Verified
@@ -135,14 +145,18 @@ staged in the session tree. The profile now names `<session>/target-shell mrix`,
 the two control-socket spellings when a control plane was asked for - and nothing wider.
 
 **An enforcing profile must permit the confined process to signal itself.** A generated
-profile carries `signal peer=<profile>` in both the bare and `bwrap//&unpriv_bwrap//&`
-stacked spellings, and nothing wider.
+profile carries `signal peer=<profile>` in both the bare and the full stacked spelling, and
+nothing wider. The stacked spelling has to list its components in sorted order, because
+that is how the kernel renders the label a `peer=` is matched against - measured, with an
+unsorted spelling and a deliberately non-matching one as controls.
 
 **`EXTERNAL_DIRECTORY` grants traversal, not a listing.** On Linux a rule naming
 `EXTERNAL_DIRECTORY` without `READ` emits the base clause and no trailing-slash companion,
 so the directory can be resolved through and stat'ed while `ls` on it is refused. `READ` is
-what asks for a listing, and a rule naming it still gets the companion. The macOS mapping is
-unchanged: SBPL folds `EXTERNAL_DIRECTORY` into `file-read*` as it always has.
+what asks for a listing, and a rule naming it still gets the companion. macOS says the same
+thing with `file-read-metadata` instead of `file-read*`, measured under a real
+`sandbox-exec`: the listing is refused, a file inside a granted subtree still opens, and the
+same directory granted `READ` does list.
 
 **Network isolation uses kernel network namespaces, not shared-namespace proxying.**
 Considered and rejected: running the sandboxed process without `--unshare-net` and
@@ -205,17 +219,80 @@ samples, two independent runs): mean 0.30-0.33ms, p50 0.29-0.32ms, p95 0.42-0.49
 
 ## Concurrency model
 
-Per-session AppArmor profiles are independent, but every concurrent session on one
-machine shares a single local-override file
-(`/etc/apparmor.d/local/bwrap-userns-restrict`). Safety comes from a `flock`-guarded
-privileged management script - not a JVM-side lock, since the JVM doesn't run as root and
-so can't be the thing serializing access to a root-owned file - verified by a real
-multi-session concurrent test, not just reasoned about.
+Sessions share nothing. Each one has its own profile names, its own directory under
+`/var/lib/warden/sessions`, and its own copy of bwrap, and loads and removes its policy as a
+unit. There is no shared file to serialize access to and so no lock between sessions -
+verified by a real multi-session concurrent test in which each session enforced its own
+rules and was refused the other's paths. A session does hold an exclusive lock, which is what
+lets a JVM reclaim the sessions of runs that were killed rather than closed without touching
+the live sessions of other JVMs on the machine. That lock file sits beside the session
+directory and is taken before the directory is created: while it sat inside, a directory
+existed for the length of three mkdirs before anyone held it, and another JVM's sweep read
+that as abandoned.
 
-The privilege model is two-tier: a one-time, privileged (`sudo`) install step per
-machine (`scripts/install-apparmor-bwrap-override.sh`), then zero privilege needed for
-every session launch afterward. A narrower, more auditable surface than a long-lived
-privileged helper process would be.
+That directory is deliberately not under `java.io.tmpdir`, which is mode 1777. It holds the
+bwrap copy warden's confinement profile attaches to, and that profile grants `userns`,
+`capability`, `mount` and `pivot_root`. A profile outlives the process it was loaded for
+whenever the JVM is killed, so under a world-writable root any local user could recreate the
+vacated path, put her own binary at that name and be handed namespace creation the kernel
+otherwise refuses her - measured end to end, with the userns sysctl at 1. Every JVM also
+sweeps abandoned sessions on its first launch, removing their profiles before deleting the
+directory those profiles name.
+
+The privilege model is two-tier: a one-time, privileged (`sudo`) install step per machine
+(`scripts/install-apparmor-policy.sh`), then zero privilege needed for every session launch
+afterward. That step creates warden's state directories, installs a root-owned helper, and
+grants the daemon user passwordless sudo for that one command.
+
+The helper exists because the grant cannot be narrowed in sudoers itself. sudo-rs, the
+default sudo on Ubuntu 25.10 and later, rejects a wildcard in a command argument outright,
+so `apparmor_parser -r <directory>/*` is not a rule that loads at all - and naming the bare
+parser would permit any arguments, which is no narrowing.
+
+**The helper takes no path, and the boundary is what the policy may contain rather than
+where it came from.** Bounding a path bounds nothing when the grantee owns the directory it
+names: with the daemon user writing warden's own policy directory, a crafted file placed
+there unloaded the distribution's `/usr/bin/man` profile, replaced it with a permissive one,
+and loaded policy from outside the directory entirely through a symlink the "is this a
+regular file" test followed. All measured against the real mechanism.
+
+So the helper's one argument is a 32-hex session id, and it writes every profile header
+itself - names, flags and the bwrap attachment. What the daemon user supplies is the rule
+body of `warden-sandbox-<id>`, a profile carrying no attachment specification, delivered on
+stdin so there is no path to swap. That body may contain no brace, which is what makes the
+bound hold: every `{` and `}` in the file the parser sees is one the helper wrote, so every
+profile declaration between them is too. A brace in a real directory name does not reach it as
+one - it is byte-escaped on the way in.
+
+The include allowlist is the other half of the same invariant, and it names one file rather
+than a directory - an `include` is textual, and an abstraction can declare a profile of its
+own, so `abstractions/*` would have been a way to bring one in without writing a brace.
+`apparmor_parser -N` over the assembled file is the backstop, checked against exactly the
+three names the session id yields - and it is a backstop rather than the boundary because it
+reports a profile's name and not its attachment: `profile warden-sandbox-<id> /usr/sbin/sshd
+{ }` prints only the name while confining sshd.
+
+**What is measured on one distribution here, and what is not.** *Which* shipped abstractions
+declare profiles is a property of the distribution, and this project has measured one. Asked
+file by file, `apparmor_parser -N` names seven of the ones Ubuntu 26.04 ships, and the
+directory holding three of those is an eighth spelling that declares the same profiles. That
+is a limit on the survey, not on the allowlist - the allowlist names a single file and reads the same on every
+distribution, one counterexample is all the reasoning it supports needs, and another
+distribution can only add more. What `<abstractions/base>` itself contains belongs to the
+distribution too, and warden neither controls it nor surveys it: `-N` reads through an include
+and names what the included file declares, so on a distribution where that file grew a profile
+declaration the launch is refused rather than the declaration loaded. That property is
+asserted, and the assertion skips itself - visibly - on a machine that ships no
+profile-declaring abstraction to ask it with.
+
+What a compromised daemon user can still do is load and remove profiles named
+`warden-{bwrap,unpriv,sandbox}-<32 hex>`. The bwrap one attaches to a path inside a session
+directory only that same user can write, so it can hand `userns` to a binary that user put
+there - which is what warden's normal operation gives it anyway, and reaches no other account
+on the machine. The only file it can make a privileged parser open is the one root-owned
+abstraction warden itself emits, it cannot replace or unload anything the distribution ships,
+and it cannot attach a profile to any executable outside its own session tree. `AppArmorPolicyHelperBoundTest`
+is that statement as assertions, run against the installed helper rather than a copy of its text.
 
 ## Practical notes for callers
 
@@ -242,6 +319,35 @@ before you hit them yourself (all demonstrated in `examples/warden-example-simpl
   filesystem rules, and a mount whose source is missing fails the launch rather than
   silently producing an empty directory. macOS has no mount namespace, every host path is
   already reachable there, so mounts are a no-op on that platform.
+- **Say whether you mean a glob or a path.** A rule is matched against a `RulePath`, and there
+  are two ways to make one. `RulePath.glob(...)` is the pattern language: `**`, `*`, `?`, and
+  `\` escaping whatever follows it. `RulePath.literal(path)` and `RulePath.tree(directory)` take
+  a path and mean every character of it, wildcards included; `RulePath.quote(fragment)` is the
+  primitive under both, for composing a pattern out of your own wildcards and a path you hold -
+  `RulePath.glob(RulePath.quote(root) + "/**/.env")`. Interpolating a path into a glob string
+  yourself is the one thing to avoid: a workspace really named `My*Project` spelled that way
+  grants every sibling the wildcard matches, measured on both platforms against three of them,
+  with no error and nothing in the profile to notice. That is why the question is asked at the
+  API rather than guessed at in the translator.
+- **A path can contain anything but a double quote.** Whichever way you name it, warden encodes
+  a path so that a space, tab, line break, `#`, `,`, `!`, `[`, `]`, `{`, `}`, `\`, `*`, `?`, a
+  single quote or any non-ASCII character in a real directory name reaches the kernel as the
+  character it is. Measured on both platforms against directories actually created with those
+  names, with two decoys each - the character dropped and the character replaced - to catch an
+  escape that collapses. The single exception is a double quote, refused outright on both
+  platforms with a message naming it: macOS takes a pattern as a regex inside a `#"..."`
+  literal whose only terminator is that same character, with no escape for it. AppArmor could
+  carry one, and it is refused there too so that one rule list does not mean two different
+  policies.
+- **A glob supports `**`, `*` and `?` and refuses the rest, loudly.** A `java.nio.file` character
+  class (`[...]`) or alternation (`{a,b}`) is refused rather than translated, on both platforms,
+  with a message naming the pattern and the two spellings that do work - one rule per
+  alternative, or `\{` for a path that really holds a brace. Neither policy language has either
+  construct. Emitted as text, `**/*.{pem,key}` becomes a rule about a file named `{pem,key}`:
+  measured with a real certificate and key present in a granted tree, on a real kernel and a real
+  `sandbox-exec`, it left both readable and was indistinguishable from writing no rule at all,
+  while two separate patterns denied both. A refusal is the only one of those outcomes a person
+  can act on.
 - **Rule order is priority order** - the first rule in your list wins over a later,
   overlapping one. A narrow `deny` meant to carve an exception out of a broader `allow`
   must be listed *before* that `allow`.
@@ -262,11 +368,13 @@ before you hit them yourself (all demonstrated in `examples/warden-example-simpl
 - The per-session AppArmor stacking recipe has no known community precedent found during
   this project's own research. Expect to be on your own if it breaks against an untested
   kernel/AppArmor-parser combination.
-- Linux enforcement depends on Ubuntu's own `/etc/apparmor.d/bwrap-userns-restrict`
-  vendor profile already being present on the machine - confirmed against the real
-  Ubuntu package archive to ship starting with 25.10/26.04, genuinely absent from 24.04
-  LTS and earlier. CI targets `ubuntu-26.04` for this reason, there's no vendored
-  fallback for older releases yet.
+- A path-based blacklist is defeated by a hard link, on both platforms: a second directory
+  entry for the same inode, under a name no rule covers. Bounded by the confined process
+  being unable to create one - it can reach neither a directory outside its own grants nor
+  the link target it would need.
+- A caller supplying a setuid bwrap loses the setuid bit in the per-session copy. That
+  costs nothing on a kernel offering unprivileged user namespaces, which is the only kind
+  this mechanism works on at all.
 - Verified only on Ubuntu/Debian-family with AppArmor active. Fedora is not supported
   (SELinux, not AppArmor). Arch requires manually enabling the AppArmor kernel module -
   see the [ArchWiki](https://wiki.archlinux.org/title/AppArmor).
@@ -274,7 +382,7 @@ before you hit them yourself (all demonstrated in `examples/warden-example-simpl
 ## Modules
 
 - `warden-api` - the public contract: `SandboxedProcessLauncher`, `SandboxedProcess`,
-  `SandboxLaunchRequest`, `FilesystemRule`, `NetworkRule`, `PathMount`,
+  `SandboxLaunchRequest`, `FilesystemRule`, `RulePath`, `NetworkRule`, `PathMount`,
   `NetworkAskHandler`. No platform-specific code.
 - `warden-core` - the implementation: `OsSandboxedProcessLauncher` (the entry point,
   dispatches to Seatbelt on macOS / AppArmor+bwrap on Linux), profile generation, the

@@ -7,30 +7,24 @@ public enum AccessKind {
   /** Write access to file content. */
   WRITE,
   /**
-   * Whether a directory outside the sandbox root is addressable at all - a coarser concept than
-   * {@link #READ}/{@link #WRITE}, with no distinct equivalent on every platform.
+   * Permission to resolve through a directory outside the sandbox root and to stat what it holds,
+   * without permission to list its own entries. Grant it for the directories a confined process has
+   * to walk on the way to somewhere it is allowed, and {@link #READ} for the ones whose contents it
+   * is meant to enumerate - a rule naming both grants the listing.
    */
   EXTERNAL_DIRECTORY,
   /**
-   * Permission to run the matched path as a program. Distinct from {@link #READ} on Linux, where a
-   * readable-but-not-executable path fails {@code execve} with {@code EACCES} - a sandboxed process
-   * cannot start a binary the embedder placed outside the standard system locations without it. The
-   * child stays under the same confinement rather than transitioning to another profile or dropping
-   * out of one.
+   * Permission to run the matched path as a program. Distinct from {@link #READ}: a
+   * readable-but-not-executable path fails to start on both platforms, and a native binary runs
+   * from a path with no read grant at all on both, since neither kernel mediates its own image load
+   * as a file read. A script needs {@link #READ} as well, because its interpreter has to open it.
    *
    * <p>On a {@link Decision#DENY} rule it means the opposite - the matched path may not be run even
-   * where a broader grant would otherwise allow it - but it is <strong>Linux-only</strong>, and a
-   * rule set containing one is refused when a macOS profile is generated from it. Seatbelt has no
-   * per-path execute operation, so the only clause it could emit is a read deny, which was measured
-   * to make the whole matched tree unreadable rather than merely unrunnable. Refusing is deliberate:
-   * a rule that quietly means something much broader on one of the two platforms it is authored for
-   * is worse than one that says it cannot be expressed there.
+   * where a broader grant would otherwise allow it - and it refuses the execution alone, leaving
+   * whatever read access the rule set grants untouched.
    *
-   * <p>For a script, add {@link #READ} to the deny: the interpreter has to
-   * read the file, so denying the read stops it running on both platforms. For a native binary
-   * there is no macOS equivalent - denying its read does not stop it running, because the kernel's
-   * own image load is not mediated as a file read - so such a rule belongs in the Linux rule set
-   * only.
+   * <p>The child stays under the same confinement rather than transitioning to another profile or
+   * dropping out of one.
    */
   EXECUTE,
   /**

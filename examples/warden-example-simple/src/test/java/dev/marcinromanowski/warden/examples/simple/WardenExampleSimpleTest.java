@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import dev.marcinromanowski.warden.api.AccessKind;
 import dev.marcinromanowski.warden.api.FilesystemRule;
+import dev.marcinromanowski.warden.api.RulePath;
 import dev.marcinromanowski.warden.api.SandboxLaunchRequest;
 import dev.marcinromanowski.warden.api.SandboxedProcess;
 import dev.marcinromanowski.warden.core.OsSandboxedProcessLauncher;
@@ -24,11 +25,26 @@ class WardenExampleSimpleTest {
 
   @Test
   void allowedFileIsReadableAndDeniedFileIsNot(@TempDir Path workspaceParameter) throws IOException {
-    // toRealPath() matters here: on macOS, a JUnit @TempDir commonly lands under /var/folders/...,
-    // itself a symlink to /private/var/folders/... - Seatbelt enforces against the kernel-resolved
-    // canonical path, not the symlinked one, so a rule built from the raw path would silently
-    // never match.
-    Path workspace = workspaceParameter.toRealPath();
+    assertAllowedAndDeniedFiles(workspaceParameter.toRealPath());
+  }
+
+  @Test
+  void allowAndDenyStillHoldUnderAWorkspacePathWithASpace(@TempDir Path workspaceParameter) throws IOException {
+    // The same launch under a workspace whose directory name has a space in it - the shape a project
+    // living in "~/My Projects/..." has on any machine. It used to fail closed on Linux with an
+    // AppArmor parser error naming nothing the caller wrote, because the space ended the rule clause.
+    Path workspace = workspaceParameter.toRealPath()
+        .resolve("my project");
+    Files.createDirectories(workspace);
+
+    assertAllowedAndDeniedFiles(workspace);
+  }
+
+  private void assertAllowedAndDeniedFiles(Path workspace) throws IOException {
+    // The caller resolves with toRealPath() before building rules: on macOS a JUnit @TempDir commonly
+    // lands under /var/folders/..., itself a symlink to /private/var/folders/... - Seatbelt enforces
+    // against the kernel-resolved canonical path, not the symlinked one, so a rule built from the raw
+    // path would silently never match.
     Path allowedFile = workspace.resolve("allowed.txt");
     Path deniedFile = workspace.resolve("denied.txt");
     Files.writeString(allowedFile, "hello from an allowed file");
@@ -39,7 +55,7 @@ class WardenExampleSimpleTest {
 
     SandboxLaunchRequest request = SandboxLaunchRequest.command(
         "/bin/sh", "-c",
-        "cat " + allowedFile + " 2>&1; echo " + SECTION_SEPARATOR + "; cat " + deniedFile + " 2>&1"
+        "cat '" + allowedFile + "' 2>&1; echo " + SECTION_SEPARATOR + "; cat '" + deniedFile + "' 2>&1"
     )
         .sandboxRoot(workspace)
         // Sets the child's own cwd inside the granted workspace - left unset, it would inherit
@@ -48,9 +64,9 @@ class WardenExampleSimpleTest {
         .logFile(logFile.toFile())
         // Rule order is priority order (first = highest priority) - the deny must be listed
         // before the broader allow it's meant to carve an exception out of.
-        .filesystemRule(FilesystemRule.deny(deniedFile.toString(), "test: denied file", AccessKind.READ))
-        .filesystemRule(FilesystemRule.allow(workspace.toString(), "test: workspace root itself, for traversal", AccessKind.READ))
-        .filesystemRule(FilesystemRule.allow(workspace + "/**", "test: everything inside the workspace", AccessKind.READ, AccessKind.WRITE))
+        .filesystemRule(FilesystemRule.deny(RulePath.literal(deniedFile), "test: denied file", AccessKind.READ))
+        .filesystemRule(FilesystemRule.allow(RulePath.literal(workspace), "test: workspace root itself, for traversal", AccessKind.READ))
+        .filesystemRule(FilesystemRule.allow(RulePath.tree(workspace), "test: everything inside the workspace", AccessKind.READ, AccessKind.WRITE))
         .build();
 
     try (

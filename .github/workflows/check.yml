@@ -35,9 +35,9 @@ jobs:
           bwrap --version
           socat -V | head -n 1
 
-      - name: Install the AppArmor bwrap-attachment management script
+      - name: Create the AppArmor policy directory and its sudo grant
         if: runner.os == 'Linux'
-        run: sudo ./scripts/install-apparmor-bwrap-override.sh "$(whoami)"
+        run: sudo ./scripts/install-apparmor-policy.sh "$(whoami)"
 
       - name: ./gradlew check
         run: ./gradlew check

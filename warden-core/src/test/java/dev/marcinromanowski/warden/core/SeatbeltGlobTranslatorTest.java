@@ -3,6 +3,8 @@ package dev.marcinromanowski.warden.core;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import dev.marcinromanowski.warden.api.RulePath;
+import dev.marcinromanowski.warden.api.SandboxRuleRejectedException;
 import java.util.regex.Pattern;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -31,48 +33,63 @@ class SeatbeltGlobTranslatorTest {
       "/a/**/b,/a/x/y/b,true",
       "/a/**/b,/a/bsuffix,false",
       "**/report(final).pem,/report(final).pem,true",
-      "**/report(final).pem,/reportXfinalY.pem,false"
+      "**/report(final).pem,/reportXfinalY.pem,false",
+      // Every character AppArmor needs a byte escape for is carried here by the regex escaping the
+      // translation already does, so the two platforms accept the same rule list.
+      "'/w/my project/**',/w/my project/src/Main.java,true",
+      "'/w/my project/**',/w/myXproject/src/Main.java,false",
+      "'/w/a,b/**','/w/a,b/x',true",
+      "'/w/a#b/**',/w/a#b/x,true",
+      // "\\" escapes the next character in a glob, so this pattern names "backslash" - the
+      // directory really called "back\\slash" is named through a literal, asserted below.
+      "'/w/back\\slash/**',/w/backslash/x,true",
+      "'/w/back\\slash/**',/w/back\\slash/x,false"
   })
   void translatesGlobPatternsToMatchingRegex(String pattern, String candidate, boolean expectedMatch) {
-    String regex = SeatbeltGlobTranslator.toRegex(pattern);
+    String regex = SeatbeltGlobTranslator.toRegex(RulePath.glob(pattern));
 
     assertThat(Pattern.matches(regex, candidate))
         .as("SBPL regex %s translated from pattern %s against %s", regex, pattern, candidate)
         .isEqualTo(expectedMatch);
   }
 
+  @ParameterizedTest
+  @CsvSource({
+      "'/w/e{f}g','/w/e{f}g',true",
+      "'/w/e{f}g',/w/efg,false",
+      "'/w/h[i]j','/w/h[i]j',true",
+      "'/w/h[i]j',/w/hij,false",
+      "'/w/My*Project','/w/My*Project',true",
+      "'/w/My*Project',/w/MyOtherProject,false",
+      "'/w/q?r','/w/q?r',true",
+      "'/w/q?r',/w/qXr,false",
+      "'/w/back\\slash','/w/back\\slash',true",
+      "'/w/back\\slash',/w/backslash,false"
+  })
+  void readsEveryCharacterOfALiteralPathAsItself(String path, String candidate, boolean expectedMatch) {
+    String regex = SeatbeltGlobTranslator.toRegex(RulePath.literal(path));
+
+    assertThat(Pattern.matches(regex, candidate))
+        .as("SBPL regex %s translated from literal path %s against %s", regex, path, candidate)
+        .isEqualTo(expectedMatch);
+  }
+
   @Test
   void rejectsDoubleQuoteRatherThanClosingTheSbplStringLiteralEarly() {
-    assertThatThrownBy(() -> SeatbeltGlobTranslator.toRegex("**/report\".pem"))
-        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> SeatbeltGlobTranslator.toRegex(RulePath.glob("**/report\".pem")))
+        .isInstanceOf(SandboxRuleRejectedException.class);
   }
 
   @Test
-  void rejectsBackslashRatherThanSilentlyMistranslatingIt() {
-    assertThatThrownBy(() -> SeatbeltGlobTranslator.toRegex("**\\report.pem"))
-        .isInstanceOf(IllegalArgumentException.class);
+  void escapesABackslashRatherThanLettingItCollapse() {
+    assertThat(SeatbeltGlobTranslator.toRegex(RulePath.literal("/w/back\\slash")))
+        .isEqualTo("^/w/back\\\\slash$");
   }
 
   @Test
-  void expandsUserHomeTokenBeforeTranslation() {
-    String userHome = System.getProperty("user.home");
-    String regex = SeatbeltGlobTranslator.toRegex("${user.home}/.aws/credentials");
-
-    assertThat(Pattern.matches(regex, userHome + "/.aws/credentials"))
-        .isTrue();
-    assertThat(Pattern.matches(regex, "/some/other/root/.aws/credentials"))
-        .isFalse();
-  }
-
-  @Test
-  void rejectsBracketCharacterClassRatherThanMistranslatingIt() {
-    assertThatThrownBy(() -> SeatbeltGlobTranslator.toRegex("**/*.[jJ][sS]"))
-        .isInstanceOf(IllegalArgumentException.class);
-  }
-
-  @Test
-  void rejectsBraceGroupRatherThanMistranslatingIt() {
-    assertThatThrownBy(() -> SeatbeltGlobTranslator.toRegex("**/*.{env,pem}"))
-        .isInstanceOf(IllegalArgumentException.class);
+  void refusesANulByteBecauseNoPathCanHoldOne() {
+    assertThatThrownBy(() -> SeatbeltGlobTranslator.toRegex(RulePath.glob("/w/evil\0/**")))
+        .isInstanceOf(SandboxRuleRejectedException.class)
+        .hasMessageContaining("NUL");
   }
 }

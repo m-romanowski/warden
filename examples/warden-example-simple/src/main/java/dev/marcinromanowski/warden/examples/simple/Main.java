@@ -2,6 +2,7 @@ package dev.marcinromanowski.warden.examples.simple;
 
 import dev.marcinromanowski.warden.api.AccessKind;
 import dev.marcinromanowski.warden.api.FilesystemRule;
+import dev.marcinromanowski.warden.api.RulePath;
 import dev.marcinromanowski.warden.api.SandboxLaunchRequest;
 import dev.marcinromanowski.warden.api.SandboxedProcess;
 import dev.marcinromanowski.warden.core.OsSandboxedProcessLauncher;
@@ -48,13 +49,13 @@ public final class Main {
         .logFile(logFile.toFile())
         // Rule order is priority order (first = highest priority) - the deny must be listed
         // before the broader allow it's meant to carve an exception out of.
-        .filesystemRule(FilesystemRule.deny(deniedFile.toString(), "example: denied file", AccessKind.READ))
+        .filesystemRule(FilesystemRule.deny(RulePath.literal(deniedFile), "example: denied file", AccessKind.READ))
         .filesystemRule(
-            FilesystemRule.allow(workspace.toString(), "example: workspace root itself, for traversal", AccessKind.READ)
+            FilesystemRule.allow(RulePath.literal(workspace), "example: workspace root itself, for traversal", AccessKind.READ)
         )
         .filesystemRule(
             FilesystemRule.allow(
-                workspace + "/**", "example: everything inside the workspace", AccessKind.READ, AccessKind.WRITE
+                RulePath.tree(workspace), "example: everything inside the workspace", AccessKind.READ, AccessKind.WRITE
             )
         )
         .build();

@@ -3,6 +3,7 @@ package dev.marcinromanowski.warden.examples.opencode;
 import dev.marcinromanowski.warden.api.AccessKind;
 import dev.marcinromanowski.warden.api.FilesystemRule;
 import dev.marcinromanowski.warden.api.NetworkRule;
+import dev.marcinromanowski.warden.api.RulePath;
 import dev.marcinromanowski.warden.api.SandboxLaunchRequest;
 import dev.marcinromanowski.warden.api.SandboxedProcess;
 import dev.marcinromanowski.warden.core.OsSandboxedProcessLauncher;
@@ -43,21 +44,21 @@ public final class Main {
         .logFile(logFile.toFile())
         // Rule order is priority order (first = highest priority) - the denies must be listed
         // before the broader allow they're meant to carve exceptions out of.
-        .filesystemRule(FilesystemRule.denyRead("**/.env*", "example: never let a credential file be read"))
-        .filesystemRule(FilesystemRule.denyRead("**/id_rsa*", "example: never let an SSH private key be read"))
+        .filesystemRule(FilesystemRule.denyRead(RulePath.glob("**/.env*"), "example: never let a credential file be read"))
+        .filesystemRule(FilesystemRule.denyRead(RulePath.glob("**/id_rsa*"), "example: never let an SSH private key be read"))
         // Execute is a grant of its own, and the standard system locations the sandbox bootstraps
         // are the only ones a binary runs from without it - so an executable resolved from anywhere
         // the embedder chose needs this rule or it fails to start at all.
         .filesystemRule(
             FilesystemRule.allow(
-                opencodeExecutable.toString(),
+                RulePath.literal(opencodeExecutable),
                 "example: the backend binary this launch runs",
                 AccessKind.READ,
                 AccessKind.EXECUTE
             )
         )
-        .filesystemRule(FilesystemRule.allow(workspace.toString(), "example: workspace root itself, for traversal", AccessKind.READ))
-        .filesystemRule(FilesystemRule.allowReadWrite(workspace + "/**", "example: the workspace OpenCode operates on"))
+        .filesystemRule(FilesystemRule.allow(RulePath.literal(workspace), "example: workspace root itself, for traversal", AccessKind.READ))
+        .filesystemRule(FilesystemRule.allowReadWrite(RulePath.tree(workspace), "example: the workspace OpenCode operates on"))
         .networkRule(NetworkRule.allowHost("api.example.com", "example: an LLM provider host"))
         .build();
 
