@@ -381,7 +381,7 @@ class AppArmorProfileGeneratorEnforcementTest {
   }
 
   @Test
-  void allowNamingADirectoryGrantsListingItWithoutGrantingItsRelocation(
+  void allowNamingTheDirectoryGrantsListingItWithoutGrantingItsRelocation(
       @TempDir Path tempDirParameter
   ) throws IOException {
     Path tempDir = tempDirParameter.toRealPath();
@@ -438,7 +438,8 @@ class AppArmorProfileGeneratorEnforcementTest {
     );
 
     try (LoadedAppArmorProfile profile = LoadedAppArmorProfile.load(rules)) {
-      SandboxExecResult readThrough = profile.run(CAT_EXECUTABLE, traversed.resolve("inside.txt").toString());
+      Path readThroughTarget = traversed.resolve("inside.txt");
+      SandboxExecResult readThrough = profile.run(CAT_EXECUTABLE, readThroughTarget.toString());
       SandboxExecResult listTraversed = profile.run(LIST_EXECUTABLE, traversed.toString());
       SandboxExecResult listRead = profile.run(LIST_EXECUTABLE, listed.toString());
 
@@ -455,7 +456,7 @@ class AppArmorProfileGeneratorEnforcementTest {
   }
 
   @Test
-  void externalDirectoryAloneGrantsAFilesContentsBecauseAppArmorHasNoMetadataOnlyRead() throws IOException {
+  void externalDirectoryAloneGrantsFileContentsBecauseAppArmorHasNoMetadataOnlyRead() throws IOException {
     // The Linux half of a divergence macOS records from the other side. EXTERNAL_DIRECTORY alone means
     // "addressable, not listable", which for a directory both mechanisms produce. For a FILE, macOS
     // grants metadata and refuses the bytes, and AppArmor's narrowest read letter is the one that reads
@@ -581,7 +582,7 @@ class AppArmorProfileGeneratorEnforcementTest {
   }
 
   @Test
-  void carriesABraceInAPathWithoutPuttingOneInTheBodyThePrivilegedHelperReads() {
+  void carriesTheBraceInThePathWithoutPuttingOneInTheBodyThePrivilegedHelperReads() {
     String body = AppArmorProfileGenerator.sessionProfileBody(
         "warden-sandbox-test", List.of(allowRule(RulePath.tree("/workspace/e{f}g"))),
         Optional.empty(), Optional.empty(), Optional.empty()
@@ -596,7 +597,7 @@ class AppArmorProfileGeneratorEnforcementTest {
   }
 
   @Test
-  void grantsOnlyTheDirectoryWhoseNameHoldsAWildcardWhenTheRuleNamesItLiterally(
+  void grantsOnlyTheDirectoryWhoseNameHoldsTheWildcardWhenTheRuleNamesItLiterally(
       @TempDir Path tempDirParameter
   ) throws IOException {
     Path tempDir = tempDirParameter.toRealPath();
@@ -606,25 +607,25 @@ class AppArmorProfileGeneratorEnforcementTest {
     Path sibling = payloadDirectory(tempDir, "MyOtherProject");
 
     try (
-        LoadedAppArmorProfile asAGlob = LoadedAppArmorProfile.load(
+        LoadedAppArmorProfile asGlob = LoadedAppArmorProfile.load(
             List.of(allowRule(RulePath.literal(CAT_EXECUTABLE)), allowRule(RulePath.glob(named + "/**")))
         )
     ) {
-      assertThat(asAGlob.run(CAT_EXECUTABLE, sibling.resolve("f").toString()).output())
+      assertThat(asGlob.run(CAT_EXECUTABLE, sibling.resolve("f").toString()).output())
           .as("a live wildcard is what makes the over-grant reachable, and this is the control for it")
           .contains("PAYLOAD");
     }
 
     try (
-        LoadedAppArmorProfile asALiteral = LoadedAppArmorProfile.load(
+        LoadedAppArmorProfile asLiteral = LoadedAppArmorProfile.load(
             List.of(allowRule(RulePath.literal(CAT_EXECUTABLE)), allowRule(RulePath.tree(named)))
         )
     ) {
-      assertThat(asALiteral.run(CAT_EXECUTABLE, named.resolve("f").toString()).output())
+      assertThat(asLiteral.run(CAT_EXECUTABLE, named.resolve("f").toString()).output())
           .as("the directory the rule names must still be reachable")
           .contains("PAYLOAD");
       for (Path decoy : List.of(characterDropped, characterReplaced, sibling)) {
-        assertThat(asALiteral.run(CAT_EXECUTABLE, decoy.resolve("f").toString()).output())
+        assertThat(asLiteral.run(CAT_EXECUTABLE, decoy.resolve("f").toString()).output())
             .as("no directory but the one named, and %s is not it", decoy)
             .doesNotContain("PAYLOAD");
       }
@@ -632,7 +633,7 @@ class AppArmorProfileGeneratorEnforcementTest {
   }
 
   @Test
-  void refusesABraceGroupDenyRatherThanEmittingOneThatEnforcesNothing(
+  void refusesTheBraceGroupDenyRatherThanEmittingOneThatEnforcesNothing(
       @TempDir Path tempDirParameter
   ) throws IOException {
     Path tempDir = tempDirParameter.toRealPath();

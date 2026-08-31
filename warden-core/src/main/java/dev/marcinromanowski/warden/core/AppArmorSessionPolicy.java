@@ -17,8 +17,8 @@ import java.util.Optional;
 // is not a stylistic choice. A load that is interrupted after the kernel has taken the policy but
 // before this method returns leaves no handle for anyone to close, and the profiles then outlive
 // every session and every JVM: measured, three profiles still loaded with their session directory
-// already deleted. Every teardown path closes a session, so BwrapSessionStore.Session removes the
-// policy named by its own directory whether a load reached the kernel or not.
+// already deleted. Every teardown path closes a session, so BwrapSession removes the policy named
+// by its own directory whether a load reached the kernel or not.
 //
 // Everything about a session's policy is private to that session: its own profile names, its own
 // bwrap path to attach to. Nothing is shared between sessions, so nothing needs a lock, and no file
@@ -70,12 +70,12 @@ final class AppArmorSessionPolicy {
     if (missing.isEmpty()) {
       return;
     }
-    throw new SandboxEstablishmentException(
-        "Linux sandboxing requires a one-time install step (see scripts/install-apparmor-policy.sh)"
-            + " before any session can launch: it creates " + BwrapSessionStore.SESSIONS_DIRECTORY
-            + ", writable by this user, and installs the root-owned " + POLICY_HELPER
-            + " with a passwordless sudo grant for it. Problem: " + missing.get() + "."
-    );
+    String message = "Linux sandboxing requires a one-time install step"
+        + " (see scripts/install-apparmor-policy.sh) before any session can launch: it creates "
+        + BwrapSessionStore.SESSIONS_DIRECTORY + ", writable by this user, and installs the"
+        + " root-owned " + POLICY_HELPER + " with a passwordless sudo grant for it. Problem: "
+        + missing.get() + ".";
+    throw new SandboxEstablishmentException(message);
   }
 
   private static Optional<String> missingPrerequisite() {

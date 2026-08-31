@@ -55,17 +55,17 @@ final class GlobPattern {
         throw refusedConstruct((char) codePoint, expanded);
       }
       if (codePoint == SINGLE_CHARACTER_WILDCARD) {
-        tokens.add(GlobToken.Wildcard.SINGLE_CHARACTER);
+        tokens.add(GlobWildcard.SINGLE_CHARACTER);
         index += width;
         continue;
       }
       if (codePoint == WILDCARD) {
         boolean recursive = index + width < expanded.length() && expanded.charAt(index + width) == WILDCARD;
-        tokens.add(recursive ? GlobToken.Wildcard.ANY_PATH : GlobToken.Wildcard.ANY_SEGMENT);
+        tokens.add(recursive ? GlobWildcard.ANY_PATH : GlobWildcard.ANY_SEGMENT);
         index += recursive ? width + 1 : width;
         continue;
       }
-      tokens.add(new GlobToken.Literal(codePoint));
+      tokens.add(new GlobLiteral(codePoint));
       index += width;
     }
     return List.copyOf(tokens);
@@ -73,37 +73,31 @@ final class GlobPattern {
 
   private static int appendEscaped(List<GlobToken> tokens, String pattern, int index) {
     if (index >= pattern.length()) {
-      throw new SandboxRuleRejectedException(
-          "Unsupported sandbox rule pattern: it ends in a backslash with nothing to escape."
-              + " A backslash makes the next character literal, so a trailing one names no path."
-              + " Write \"\\\\\" for a path whose real name ends in a backslash. Pattern: " + pattern,
-          pattern
-      );
+      String message = "Unsupported sandbox rule pattern: it ends in a backslash with nothing to"
+          + " escape. A backslash makes the next character literal, so a trailing one names no path."
+          + " Write \"\\\\\" for a path whose real name ends in a backslash. Pattern: " + pattern;
+      throw new SandboxRuleRejectedException(message, pattern);
     }
     int codePoint = pattern.codePointAt(index);
     requireCarryable(codePoint, pattern);
-    tokens.add(new GlobToken.Literal(codePoint));
+    tokens.add(new GlobLiteral(codePoint));
     return index + Character.charCount(codePoint);
   }
 
   private static void requireCarryable(int codePoint, String pattern) {
     if (codePoint == UNSUPPORTED_QUOTE) {
-      throw new SandboxRuleRejectedException(
-          "Unsupported character in sandbox rule pattern: a double quote ('\"'). macOS Seatbelt"
-              + " takes a rule pattern as a regex inside a #\"...\" literal, whose only terminator"
-              + " is that same character and which has no escape for it, so a pattern containing"
-              + " one cannot be expressed there at all. Refused on Linux as well, where it could"
-              + " be expressed, so that one rule list does not mean two different policies."
-              + " Pattern: " + pattern,
-          pattern
-      );
+      String message = "Unsupported character in sandbox rule pattern: a double quote ('\"')."
+          + " macOS Seatbelt takes a rule pattern as a regex inside a #\"...\" literal, whose only"
+          + " terminator is that same character and which has no escape for it, so a pattern"
+          + " containing one cannot be expressed there at all. Refused on Linux as well, where it"
+          + " could be expressed, so that one rule list does not mean two different policies."
+          + " Pattern: " + pattern;
+      throw new SandboxRuleRejectedException(message, pattern);
     }
     if (codePoint == UNSUPPORTED_NUL) {
-      throw new SandboxRuleRejectedException(
-          "Unsupported character in sandbox rule pattern: a NUL byte. No filesystem path can"
-              + " contain one, so this pattern names nothing. Pattern: " + pattern,
-          pattern
-      );
+      String message = "Unsupported character in sandbox rule pattern: a NUL byte. No filesystem"
+          + " path can contain one, so this pattern names nothing. Pattern: " + pattern;
+      throw new SandboxRuleRejectedException(message, pattern);
     }
   }
 

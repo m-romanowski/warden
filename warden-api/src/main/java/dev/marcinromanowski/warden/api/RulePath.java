@@ -50,7 +50,8 @@ public final class RulePath {
 
   /** One exact path - every character of it literal, including {@code "*"} and {@code "?"}. */
   public static RulePath literal(Path path) {
-    return literal(Preconditions.nonNull(path, "path").toString());
+    Path required = Preconditions.nonNull(path, "path");
+    return literal(required.toString());
   }
 
   /**
@@ -64,7 +65,8 @@ public final class RulePath {
 
   /** Everything under one exact directory. */
   public static RulePath tree(Path directory) {
-    return tree(Preconditions.nonNull(directory, "directory").toString());
+    Path required = Preconditions.nonNull(directory, "directory");
+    return tree(required.toString());
   }
 
   /**

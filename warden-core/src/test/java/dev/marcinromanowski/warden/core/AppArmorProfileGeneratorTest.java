@@ -229,7 +229,7 @@ class AppArmorProfileGeneratorTest {
   }
 
   @Test
-  void allowGlobMatchingAnywhereIsLeftWithoutTheRootLevelGrantADenyWouldGet() {
+  void allowGlobMatchingAnywhereIsLeftWithoutTheRootLevelGrantTheDenyWouldGet() {
     // The root-level reading is emitted on a deny and not on an allow, and the reason is risk
     // asymmetry rather than authorship. Under the java.nio.file PathMatcher semantics these patterns
     // are authored against, "**/.env.example" does match "/.env.example" - so the caller did write
@@ -271,6 +271,7 @@ class AppArmorProfileGeneratorTest {
   }
 
   @Test
+  @SuppressWarnings("checkstyle:IllegalTokenText")
   void escapesItsOwnReservedPathsAsLiteralsRatherThanAsPatterns() {
     String profile = AppArmorProfileGenerator.generate(
         PROFILE_NAME,
@@ -409,7 +410,7 @@ class AppArmorProfileGeneratorTest {
   }
 
   @Test
-  void denyGlobWithARepeatedLeadingRecursiveGlobNamesEveryDepthItMisses() {
+  void denyGlobWithTheRepeatedLeadingRecursiveGlobNamesEveryDepthItMisses() {
     FilesystemRule credentials = rule(Set.of(AccessKind.READ), RulePath.glob("**/**/.env"), Decision.DENY);
 
     String profile = generate(List.of(credentials));

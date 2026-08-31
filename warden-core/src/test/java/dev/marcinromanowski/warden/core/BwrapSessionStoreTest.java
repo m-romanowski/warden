@@ -24,10 +24,10 @@ class BwrapSessionStoreTest {
   private static final int MINIMUM_SESSIONS_OPENED = 20;
 
   @Test
-  void keepsASessionSomewhereNoOtherLocalUserCanWrite() throws IOException {
+  void keepsTheSessionSomewhereNoOtherLocalUserCanWrite() throws IOException {
     String sessionId = newSessionId();
 
-    try (BwrapSessionStore.Session session = BwrapSessionStore.open(sessionId, _ -> { })) {
+    try (BwrapSession session = BwrapSessionStore.open(sessionId, _ -> {})) {
       assertThat(modeOf(BwrapSessionStore.SESSIONS_DIRECTORY) & OTHER_WRITE_MODE_BIT)
           .as("the directory holding every session's bwrap copy must not be world-writable, which"
               + " is exactly what java.io.tmpdir is")
@@ -41,9 +41,9 @@ class BwrapSessionStoreTest {
   }
 
   @Test
-  void removesTheSessionPolicyOnCloseEvenWhenNothingEverHeldAHandleToIt() throws IOException {
+  void removesTheSessionPolicyOnCloseEvenWhenNothingEverHeldTheHandleToIt() throws IOException {
     String sessionId = newSessionId();
-    BwrapSessionStore.Session session = BwrapSessionStore.open(sessionId, _ -> { });
+    BwrapSession session = BwrapSessionStore.open(sessionId, _ -> {});
     TestProcesses.run(helperCommand("load", sessionId), "  /** r,\n");
     assertThat(loadedProfileNames())
         .as("the policy has to reach the kernel for this to be testing anything")
@@ -58,9 +58,9 @@ class BwrapSessionStoreTest {
   }
 
   @Test
-  void closesASessionWhosePolicyNeverReachedTheKernel() {
+  void closesTheSessionWhosePolicyNeverReachedTheKernel() {
     String sessionId = newSessionId();
-    BwrapSessionStore.Session session = BwrapSessionStore.open(sessionId, _ -> { });
+    BwrapSession session = BwrapSessionStore.open(sessionId, _ -> {});
 
     session.close();
 
@@ -71,7 +71,7 @@ class BwrapSessionStoreTest {
   }
 
   @Test
-  void reclaimsTheProfilesAndFilesOfASessionNoOneIsHoldingAnyMore() throws IOException {
+  void reclaimsTheProfilesAndFilesOfTheSessionNoOneIsHoldingAnyMore() throws IOException {
     String abandoned = newSessionId();
     stageSession(abandoned);
     TestProcesses.run(helperCommand("load", abandoned), "  /** r,\n");
@@ -79,7 +79,7 @@ class BwrapSessionStoreTest {
         .as("the abandoned session's profiles have to be loaded for this to be testing anything")
         .contains("warden-sandbox-" + abandoned);
 
-    BwrapSessionStore.sweep(_ -> { });
+    BwrapSessionStore.sweep(_ -> {});
 
     assertThat(loadedProfileNames())
         .as("a profile whose session is gone stays loaded until the machine reboots, and its"
@@ -90,7 +90,7 @@ class BwrapSessionStoreTest {
   }
 
   @Test
-  void leavesASessionAnotherProcessIsStillHolding() throws IOException, InterruptedException {
+  void leavesTheSessionAnotherProcessIsStillHolding() throws IOException, InterruptedException {
     String held = newSessionId();
     Path root = stageSession(held);
     Process holder = holdLockUntilKilled(lockFileOf(held));
@@ -100,7 +100,7 @@ class BwrapSessionStoreTest {
           .as("the holder must stay alive while the sweep runs")
           .isFalse();
 
-      BwrapSessionStore.sweep(_ -> { });
+      BwrapSessionStore.sweep(_ -> {});
 
       assertThat(root)
           .as("a sweep that cannot tell a live session from an abandoned one deletes the files of"
@@ -114,7 +114,7 @@ class BwrapSessionStoreTest {
   }
 
   @Test
-  void keepsEverySessionAConcurrentSweepFromAnotherProcessRunsAlongside()
+  void keepsEverySessionTheConcurrentSweepFromAnotherProcessRunsAlongside()
       throws IOException, InterruptedException {
     Process sweeper = sweepAbandonedSessionsUntilKilled();
 
@@ -123,7 +123,7 @@ class BwrapSessionStoreTest {
       int opened = 0;
       while (System.nanoTime() < deadline) {
         String sessionId = newSessionId();
-        try (BwrapSessionStore.Session session = BwrapSessionStore.open(sessionId, _ -> { })) {
+        try (BwrapSession session = BwrapSessionStore.open(sessionId, _ -> {})) {
           assertThat(session.sessionDirectory())
               .as("a sweep running in another process must not take a live session's files away")
               .isDirectory();

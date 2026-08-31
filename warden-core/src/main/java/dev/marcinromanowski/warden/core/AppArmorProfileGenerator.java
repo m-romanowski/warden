@@ -288,6 +288,8 @@ final class AppArmorProfileGenerator {
   }
 
   private static SandboxRuleRejectedException reservedPathConflict(FilesystemRule rule, Path reservedPath) {
+    String pattern = rule.target()
+        .pattern();
     return new SandboxRuleRejectedException(
         "A supplied DENY rule covers a path warden itself needs to establish the sandbox, so the"
             + " launch is refused rather than the rule being silently overridden. warden reserves"
@@ -296,9 +298,9 @@ final class AppArmorProfileGenerator {
             + ". Narrow the rule so it does not cover that path - a deny meant for the confined"
             + " program's reach into your own filesystem does not need to name warden's own control"
             + " plane, and warden's egress and mount behaviour are configured through network rules"
-            + " and path mounts instead. Offending rule: pattern=" + rule.target().pattern()
+            + " and path mounts instead. Offending rule: pattern=" + pattern
             + ", kinds=" + rule.accessKinds() + ", reason=" + rule.reason(),
-        rule.target().pattern()
+        pattern
     );
   }
 
@@ -308,7 +310,7 @@ final class AppArmorProfileGenerator {
     String mode = accessMode(rule.accessKinds(), isAllow);
     String reason = requireInertReason(rule.reason());
     String clauseVerb = isAllow ? "allow" : "deny";
-    for (Spelling spelling : spellings(pattern, mode, isAllow, grantsDirectoryListing(rule))) {
+    for (AppArmorRuleSpelling spelling : spellings(pattern, mode, isAllow, grantsDirectoryListing(rule))) {
       List<String> patterns = isAllow
           ? List.of(spelling.pattern())
           : denyPatternsExcludingHigherPriorityAllows(spelling.pattern(), higherPriorityLiteralAllows);
@@ -326,8 +328,8 @@ final class AppArmorProfileGenerator {
     }
   }
 
-  private static List<Spelling> spellings(String pattern, String mode, boolean isAllow, boolean grantsListing) {
-    List<Spelling> spellings = new ArrayList<>(withDirectoryForm(pattern, mode, isAllow, grantsListing));
+  private static List<AppArmorRuleSpelling> spellings(String pattern, String mode, boolean isAllow, boolean grantsListing) {
+    List<AppArmorRuleSpelling> spellings = new ArrayList<>(withDirectoryForm(pattern, mode, isAllow, grantsListing));
     if (!isAllow) {
       for (String rootLevel : AppArmorGlobTranslator.zeroSegmentForms(pattern)) {
         spellings.addAll(withDirectoryForm(rootLevel, mode, isAllow, grantsListing));
@@ -381,18 +383,18 @@ final class AppArmorProfileGenerator {
   // deny clause and stays denied by the companion one. Latent rather than live: every "/**/"-shaped
   // deny in use names a file, and the companion of such a pattern matches only a directory of that
   // name. An exception that is itself a directory would silently not be excepted.
-  private static List<Spelling> withDirectoryForm(String pattern, String mode, boolean isAllow, boolean grantsListing) {
-    Spelling base = new Spelling(pattern, mode);
+  private static List<AppArmorRuleSpelling> withDirectoryForm(String pattern, String mode, boolean isAllow, boolean grantsListing) {
+    AppArmorRuleSpelling base = new AppArmorRuleSpelling(pattern, mode);
     if (pattern.endsWith("/") || pattern.endsWith("**")) {
       return List.of(base);
     }
     if (!isAllow) {
-      return List.of(base, new Spelling(pattern + "/", mode));
+      return List.of(base, new AppArmorRuleSpelling(pattern + "/", mode));
     }
     if (!grantsListing || mode.indexOf(DIRECTORY_LISTING_MODE) < 0) {
       return List.of(base);
     }
-    return List.of(base, new Spelling(pattern + "/", String.valueOf(DIRECTORY_LISTING_MODE)));
+    return List.of(base, new AppArmorRuleSpelling(pattern + "/", String.valueOf(DIRECTORY_LISTING_MODE)));
   }
 
   // Only the first higher-priority literal ALLOW that matches a given DENY pattern gets carved
@@ -495,10 +497,9 @@ final class AppArmorProfileGenerator {
       throw new IllegalArgumentException("Sandbox rule reason must not contain a brace: " + reason);
     }
     if (reason.contains(INCLUDE_KEYWORD)) {
-      throw new IllegalArgumentException(
-          "Sandbox rule reason must not contain \"" + INCLUDE_KEYWORD + "\", which AppArmor honours"
-              + " inside a comment: " + reason
-      );
+      String message = "Sandbox rule reason must not contain \"" + INCLUDE_KEYWORD + "\", which AppArmor"
+          + " honours inside a comment: " + reason;
+      throw new IllegalArgumentException(message);
     }
     return reason;
   }
@@ -507,8 +508,5 @@ final class AppArmorProfileGenerator {
     return block.lines()
         .map(line -> line.isBlank() ? line : "  " + line)
         .reduce("", (accumulated, line) -> accumulated + line + "\n");
-  }
-
-  private record Spelling(String pattern, String mode) {
   }
 }

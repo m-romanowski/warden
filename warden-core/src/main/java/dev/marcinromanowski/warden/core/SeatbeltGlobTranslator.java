@@ -35,12 +35,13 @@ final class SeatbeltGlobTranslator {
 
   static String toRegex(RulePath target) {
     StringBuilder regex = new StringBuilder("^");
-    for (GlobToken token : GlobPattern.parse(Preconditions.nonNull(target, "target").pattern())) {
+    RulePath required = Preconditions.nonNull(target, "target");
+    for (GlobToken token : GlobPattern.parse(required.pattern())) {
       switch (token) {
-        case GlobToken.Literal literal -> appendLiteral(regex, literal.codePoint());
-        case GlobToken.Wildcard.ANY_PATH -> regex.append(".*");
-        case GlobToken.Wildcard.ANY_SEGMENT -> regex.append("[^/]*");
-        case GlobToken.Wildcard.SINGLE_CHARACTER -> regex.append("[^/]");
+        case GlobLiteral literal -> appendLiteral(regex, literal.codePoint());
+        case GlobWildcard.ANY_PATH -> regex.append(".*");
+        case GlobWildcard.ANY_SEGMENT -> regex.append("[^/]*");
+        case GlobWildcard.SINGLE_CHARACTER -> regex.append("[^/]");
       }
     }
     return regex.append('$')

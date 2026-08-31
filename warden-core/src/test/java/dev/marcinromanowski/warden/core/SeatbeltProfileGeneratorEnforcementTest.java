@@ -287,8 +287,9 @@ class SeatbeltProfileGeneratorEnforcementTest {
   }
 
   @Test
-  void externalDirectoryAloneGrantsAFilesMetadataAndNotItsContents(@TempDir Path tempDirParameter)
-      throws IOException {
+  void externalDirectoryAloneGrantsFileMetadataAndNotItsContents(
+      @TempDir Path tempDirParameter
+  ) throws IOException {
     Path tempDir = tempDirParameter.toRealPath();
     Path secret = tempDir.resolve("secret.txt");
     Files.writeString(secret, "TOP-SECRET");
@@ -349,31 +350,32 @@ class SeatbeltProfileGeneratorEnforcementTest {
   }
 
   @Test
-  void grantsOnlyTheDirectoryWhoseNameHoldsAWildcardWhenTheRuleNamesItLiterally(@TempDir Path tempDirParameter)
-      throws IOException {
+  void grantsOnlyTheDirectoryWhoseNameHoldsTheWildcardWhenTheRuleNamesItLiterally(
+      @TempDir Path tempDirParameter
+  ) throws IOException {
     Path tempDir = tempDirParameter.toRealPath();
     Path named = payloadDirectory(tempDir, "My*Project");
     Path characterDropped = payloadDirectory(tempDir, "MyProject");
     Path characterReplaced = payloadDirectory(tempDir, "MyXProject");
     Path sibling = payloadDirectory(tempDir, "MyOtherProject");
-    List<FilesystemRule> asAGlob = List.of(allowCatExecutable(), allowRule(RulePath.glob(named + "/**")));
-    List<FilesystemRule> asALiteral = List.of(allowCatExecutable(), allowRule(RulePath.tree(named)));
+    List<FilesystemRule> asGlob = List.of(allowCatExecutable(), allowRule(RulePath.glob(named + "/**")));
+    List<FilesystemRule> asLiteral = List.of(allowCatExecutable(), allowRule(RulePath.tree(named)));
 
-    assertThat(runSandboxed(tempDir, asAGlob, CAT_EXECUTABLE, sibling.resolve("f").toString()).output())
+    assertThat(runSandboxed(tempDir, asGlob, CAT_EXECUTABLE, sibling.resolve("f").toString()).output())
         .as("a live wildcard is what makes the over-grant reachable, and this is the control for it")
         .contains("PAYLOAD");
-    assertThat(runSandboxed(tempDir, asALiteral, CAT_EXECUTABLE, named.resolve("f").toString()).output())
+    assertThat(runSandboxed(tempDir, asLiteral, CAT_EXECUTABLE, named.resolve("f").toString()).output())
         .as("the directory the rule names must still be reachable")
         .contains("PAYLOAD");
     for (Path decoy : List.of(characterDropped, characterReplaced, sibling)) {
-      assertThat(runSandboxed(tempDir, asALiteral, CAT_EXECUTABLE, decoy.resolve("f").toString()).output())
+      assertThat(runSandboxed(tempDir, asLiteral, CAT_EXECUTABLE, decoy.resolve("f").toString()).output())
           .as("no directory but the one named, and %s is not it", decoy)
           .doesNotContain("PAYLOAD");
     }
   }
 
   @Test
-  void refusesABraceGroupDenyRatherThanEmittingOneThatEnforcesNothing(
+  void refusesTheBraceGroupDenyRatherThanEmittingOneThatEnforcesNothing(
       @TempDir Path tempDirParameter
   ) throws IOException {
     Path tempDir = tempDirParameter.toRealPath();

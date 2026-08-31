@@ -1,5 +1,6 @@
 import org.gradle.api.artifacts.VersionCatalogsExtension
 import org.gradle.api.plugins.JavaPluginExtension
+import org.gradle.api.plugins.quality.Checkstyle
 import org.gradle.api.plugins.quality.CheckstyleExtension
 import org.gradle.api.publish.PublishingExtension
 import org.gradle.api.publish.maven.MavenPublication
@@ -23,6 +24,26 @@ allprojects {
   version = rootProject.version
 }
 
+fun Project.enforceCheckstyle() {
+  configure<CheckstyleExtension> {
+    toolVersion = checkstyleVersion
+    configFile = rootProject.file("checkstyle/checkstyle.xml")
+    configProperties["org.checkstyle.google.suppressionfilter.config"] =
+        rootProject.file("checkstyle/checkstyle-suppressions.xml").absolutePath
+  }
+
+  tasks.withType<Checkstyle>().configureEach {
+    ignoreFailures = false
+    maxWarnings = 0
+    reports {
+      xml.required.set(true)
+      html.required.set(true)
+    }
+  }
+}
+
+enforceCheckstyle()
+
 subprojects {
   val isExample = path.startsWith(":examples:")
   apply(plugin = if (isExample) "application" else "java-library")
@@ -45,12 +66,7 @@ subprojects {
     }
   }
 
-  configure<CheckstyleExtension> {
-    toolVersion = checkstyleVersion
-    configFile = rootProject.file("checkstyle/checkstyle.xml")
-    configProperties["org.checkstyle.google.suppressionfilter.config"] =
-        rootProject.file("checkstyle/checkstyle-suppressions.xml").absolutePath
-  }
+  enforceCheckstyle()
 
   if (!isExample) {
     configure<PublishingExtension> {

@@ -86,7 +86,7 @@ final class AppArmorPathEscaping {
         index++;
         continue;
       }
-      Decoded decoded = decodeRun(escapedPattern, index);
+      AppArmorEscapedRun decoded = decodeRun(escapedPattern, index);
       unescaped.append(decoded.text());
       index = decoded.nextIndex();
     }
@@ -103,7 +103,7 @@ final class AppArmorPathEscaping {
         index++;
         continue;
       }
-      Decoded decoded = decodeRun(escapedPattern, index);
+      AppArmorEscapedRun decoded = decodeRun(escapedPattern, index);
       decoded.text()
           .codePoints()
           .forEach(codePoint -> appendGlobLiteral(glob, codePoint));
@@ -135,7 +135,7 @@ final class AppArmorPathEscaping {
     return alphanumeric || UNESCAPED_PUNCTUATION.indexOf(character) >= 0;
   }
 
-  private static Decoded decodeRun(String escapedPattern, int start) {
+  private static AppArmorEscapedRun decodeRun(String escapedPattern, int start) {
     ByteArrayOutputStream octets = new ByteArrayOutputStream();
     int index = start;
     while (index < escapedPattern.length() && escapedPattern.charAt(index) == ESCAPE) {
@@ -143,9 +143,6 @@ final class AppArmorPathEscaping {
       octets.write(Integer.parseInt(digits, OCTAL_RADIX));
       index += 1 + OCTAL_DIGITS;
     }
-    return new Decoded(octets.toString(StandardCharsets.UTF_8), index);
-  }
-
-  private record Decoded(String text, int nextIndex) {
+    return new AppArmorEscapedRun(octets.toString(StandardCharsets.UTF_8), index);
   }
 }

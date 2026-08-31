@@ -83,7 +83,7 @@ class OsSandboxedProcessLauncherLinuxEnforcementTest {
   }
 
   @Test
-  void deniesAndPermitsTheSameWayUnderAWorkspacePathWithASpace(
+  void deniesAndPermitsTheSameWayUnderWorkspacePathsContainingSpaces(
       @TempDir Path tempDirParameter
   ) throws IOException {
     Path workspaceRoot = Files.createDirectories(

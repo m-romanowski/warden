@@ -30,13 +30,14 @@ class AppArmorPathEscapingTest {
 
   @ParameterizedTest
   @ValueSource(strings = {"/workspace/src/Main.java", "/a-b_c.d/e", "/x/pem", "/y/id_rsa"})
-  void leavesAPathMadeOnlyOfInertBytesExactlyAsItWas(String path) {
+  void leavesPathsMadeOnlyOfInertBytesExactlyAsTheyWere(String path) {
     assertThat(AppArmorPathEscaping.escapeLiteralPath(path))
         .isEqualTo(path);
   }
 
   @Test
-  void escapesAWildcardLikeAnyOtherCharacterOfAPathNamedLiterally() {
+  @SuppressWarnings("checkstyle:IllegalTokenText")
+  void escapesWildcardsLikeAnyOtherCharacterOfPathsNamedLiterally() {
     assertThat(AppArmorPathEscaping.escapeLiteralPath("/w/a b/**/*.pem"))
         .isEqualTo("/w/a\\040b/\\052\\052/\\052.pem");
   }
@@ -44,9 +45,9 @@ class AppArmorPathEscapingTest {
   @Test
   void theApiLiteralEntryPointAndTheGeneratorsOwnEscaperAgree() {
     // Two ways to say "every character of this path is literal": through the API's own entry point,
-    // or through the escaper the generator uses for the paths warden names itself. A caller's rule
-    // and warden's own reserved clause have to reach the same bytes, or one of them is a rule about a
-    // path that does not exist.
+    // or through the escaper the generator uses for the paths warden names itself. A caller's rule and
+    // warden's own reserved clause have to reach the same bytes, or one of them is a rule about a path
+    // that does not exist.
     for (String name : AWKWARD_NAMES) {
       if (name.contains("\"")) {
         continue;
@@ -60,13 +61,13 @@ class AppArmorPathEscapingTest {
   }
 
   @Test
-  void escapesEveryByteOfAMultiByteCharacterSeparately() {
+  void escapesEveryByteOfMultiByteCharactersSeparately() {
     assertThat(AppArmorPathEscaping.escapeLiteralPath("/w/praća"))
         .isEqualTo("/w/pra\\304\\207a");
   }
 
   @Test
-  void aPatternCoversTheSamePathsAsAJavaGlobAsItDoesAsAnAppArmorPattern() {
+  void patternCoversTheSamePathsAsJavaGlobAndAsAppArmorPattern() {
     // The generator asks java.nio.file whether a pattern covers a real path. A brace or a bracket
     // AppArmor reads as a literal must not become group or class syntax on that side, and an escape
     // run must decode back to the character it stood for rather than to the digits it is spelled with.

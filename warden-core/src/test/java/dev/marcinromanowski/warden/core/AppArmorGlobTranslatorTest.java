@@ -26,19 +26,19 @@ class AppArmorGlobTranslatorTest {
   }
 
   @Test
-  void namesTheRootLevelReadingALeadingRecursiveGlobDoesNotCover() {
+  void namesTheRootLevelReadingTheLeadingRecursiveGlobDoesNotCover() {
     assertThat(AppArmorGlobTranslator.zeroSegmentForms("/**/.env"))
         .containsExactly("/.env");
   }
 
   @Test
-  void namesEveryDepthARepeatedLeadingRecursiveGlobDoesNotCover() {
+  void namesEveryDepthTheRepeatedLeadingRecursiveGlobDoesNotCover() {
     assertThat(AppArmorGlobTranslator.zeroSegmentForms("/**/**/.env"))
         .containsExactly("/**/.env", "/.env");
   }
 
   @Test
-  void namesNoRootLevelReadingForAPatternWithoutALeadingRecursiveGlob() {
+  void namesNoRootLevelReadingForPatternsWithoutTheLeadingRecursiveGlob() {
     assertThat(AppArmorGlobTranslator.zeroSegmentForms("/workspace/**/.env"))
         .isEmpty();
   }
@@ -50,7 +50,8 @@ class AppArmorGlobTranslatorTest {
   }
 
   @Test
-  void escapesASpaceInsteadOfLettingItEndTheClause() {
+  @SuppressWarnings("checkstyle:IllegalTokenText")
+  void escapesSpacesInsteadOfLettingThemEndTheClause() {
     // A clause is "<pattern> <access-mode>," on one unquoted line, so a bare space makes the parser
     // read the rest of the path as the mode - measured, a whole profile refused for a workspace
     // whose directory name has a space in it, which is an ordinary thing for one to have.
@@ -59,19 +60,22 @@ class AppArmorGlobTranslatorTest {
   }
 
   @Test
-  void escapesTheOtherCharactersThisGrammarGivesAMeaningTo() {
+  @SuppressWarnings("checkstyle:IllegalTokenText")
+  void escapesTheOtherCharactersThisGrammarGivesMeaningTo() {
     assertThat(AppArmorGlobTranslator.toAppArmorPattern(RulePath.tree("/w/a,b/c#d/e{f}g/h[i]j/k!l/m\tn")))
         .isEqualTo("/w/a\\054b/c\\043d/e\\173f\\175g/h\\133i\\135j/k\\041l/m\\011n/**");
   }
 
   @Test
-  void escapesALineBreakInsteadOfEndingTheClauseMidPath() {
+  @SuppressWarnings("checkstyle:IllegalTokenText")
+  void escapesLineBreaksInsteadOfEndingTheClauseMidPath() {
     assertThat(AppArmorGlobTranslator.toAppArmorPattern(RulePath.literal("/w/evil\n/** rwx,")))
         .isEqualTo("/w/evil\\012/\\052\\052\\040rwx\\054");
   }
 
   @Test
-  void escapesABackslashInsteadOfLettingAppArmorReadItAsAnEscape() {
+  @SuppressWarnings("checkstyle:IllegalTokenText")
+  void escapesBackslashesInsteadOfLettingAppArmorReadThemAsAnEscape() {
     // AppArmor reads a bare backslash as an escape, so a rule set scoped to a directory named
     // "work\space" was parsed as naming "workspace" - measured on a real kernel to grant read-write
     // on that other directory and refuse every write inside the intended one. A component ending in
@@ -83,7 +87,7 @@ class AppArmorGlobTranslatorTest {
   }
 
   @Test
-  void escapesEachByteOfANonAsciiCharacterSeparately() {
+  void escapesEachByteOfNonAsciiCharactersSeparately() {
     // A path is a byte string to the parser and to the kernel alike, so a character escaped as one
     // unit would name a path no filesystem holds.
     assertThat(AppArmorGlobTranslator.toAppArmorPattern(RulePath.tree("/w/praća")))
@@ -91,7 +95,8 @@ class AppArmorGlobTranslatorTest {
   }
 
   @Test
-  void keepsTheGlobSyntaxACallerWroteLive() {
+  @SuppressWarnings("checkstyle:IllegalTokenText")
+  void keepsTheGlobSyntaxTheCallerWroteLive() {
     assertThat(AppArmorGlobTranslator.toAppArmorPattern(
         RulePath.glob(RulePath.quote("/w/my project") + "/**/*.p?m")
     ))
@@ -99,7 +104,7 @@ class AppArmorGlobTranslatorTest {
   }
 
   @Test
-  void escapesAWildcardTheCallerAskedToBeReadLiterally() {
+  void escapesTheWildcardTheCallerAskedToBeReadLiterally() {
     // The one asterisk a caller can mean two ways. Live, it is AppArmor's own wildcard byte. Escaped
     // or named through a literal, it is "\052" - and a directory really named "My*Project" is then
     // the only one the clause reaches. Measured on a real kernel in AppArmorPathEscapingTest.
@@ -112,6 +117,7 @@ class AppArmorGlobTranslatorTest {
   }
 
   @Test
+  @SuppressWarnings("checkstyle:IllegalTokenText")
   void namesTheRootLevelReadingOfAnEscapedPatternToo() {
     String pattern = AppArmorGlobTranslator.toAppArmorPattern(
         RulePath.glob("**/" + RulePath.quote(".env b"))
@@ -122,7 +128,7 @@ class AppArmorGlobTranslatorTest {
   }
 
   @Test
-  void refusesADoubleQuoteBecauseTheOtherPlatformCannotExpressOne() {
+  void refusesDoubleQuotesBecauseTheOtherPlatformCannotExpressOne() {
     // AppArmor could carry one. macOS Seatbelt cannot: a pattern is emitted there as a regex inside
     // a #"..." literal whose only terminator is that same character, with no escape for it. Refused
     // on both so one rule list does not mean two different policies.
@@ -132,7 +138,7 @@ class AppArmorGlobTranslatorTest {
   }
 
   @Test
-  void refusesANulByteBecauseNoPathCanHoldOne() {
+  void refusesNulBytesBecauseNoPathCanHoldOne() {
     assertThatThrownBy(() -> AppArmorGlobTranslator.toAppArmorPattern(RulePath.glob("/w/evil\0/**")))
         .isInstanceOf(SandboxRuleRejectedException.class)
         .hasMessageContaining("NUL");

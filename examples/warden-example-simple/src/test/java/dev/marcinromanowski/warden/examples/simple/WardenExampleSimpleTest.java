@@ -29,7 +29,7 @@ class WardenExampleSimpleTest {
   }
 
   @Test
-  void allowAndDenyStillHoldUnderAWorkspacePathWithASpace(@TempDir Path workspaceParameter) throws IOException {
+  void allowAndDenyStillHoldWhenTheWorkspacePathContainsSpaces(@TempDir Path workspaceParameter) throws IOException {
     // The same launch under a workspace whose directory name has a space in it - the shape a project
     // living in "~/My Projects/..." has on any machine. It used to fail closed on Linux with an
     // AppArmor parser error naming nothing the caller wrote, because the space ended the rule clause.
@@ -66,7 +66,12 @@ class WardenExampleSimpleTest {
         // before the broader allow it's meant to carve an exception out of.
         .filesystemRule(FilesystemRule.deny(RulePath.literal(deniedFile), "test: denied file", AccessKind.READ))
         .filesystemRule(FilesystemRule.allow(RulePath.literal(workspace), "test: workspace root itself, for traversal", AccessKind.READ))
-        .filesystemRule(FilesystemRule.allow(RulePath.tree(workspace), "test: everything inside the workspace", AccessKind.READ, AccessKind.WRITE))
+        .filesystemRule(FilesystemRule.allow(
+            RulePath.tree(workspace),
+            "test: everything inside the workspace",
+            AccessKind.READ,
+            AccessKind.WRITE
+        ))
         .build();
 
     try (

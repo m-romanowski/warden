@@ -21,14 +21,14 @@ final class BwrapSandboxedProcess implements SandboxedProcess {
   private final Process process;
   private final SandboxProxyServer proxy;
   private final Optional<ControlPlaneRelay> controlPlaneRelay;
-  private final BwrapSessionStore.Session session;
+  private final BwrapSession session;
   private final Optional<URI> resolvedControlPlaneUri;
 
   BwrapSandboxedProcess(
       Process process,
       SandboxProxyServer proxy,
       Optional<ControlPlaneRelay> controlPlaneRelay,
-      BwrapSessionStore.Session session,
+      BwrapSession session,
       Optional<URI> resolvedControlPlaneUri
   ) {
     this.process = process;

@@ -65,7 +65,7 @@ final class BwrapSandboxedProcessLauncher {
 
     AppArmorSessionPolicy.requireInstalled();
     AppArmorSessionProfileNames names = AppArmorSessionProfileNames.forNewSession();
-    BwrapSessionStore.Session session = BwrapSessionStore.open(names.sessionId(), diagnostics);
+    BwrapSession session = BwrapSessionStore.open(names.sessionId(), diagnostics);
     Path sessionDirectory = session.sessionDirectory();
     Path uniqueTargetBinary;
     SandboxProxyServer proxy = null;
@@ -76,7 +76,7 @@ final class BwrapSandboxedProcessLauncher {
 
     try {
       uniqueTargetBinary = createUniqueTargetBinary(sessionDirectory);
-      Path sessionBwrapExecutable = copyExecutable(
+      final Path sessionBwrapExecutable = copyExecutable(
           bwrapExecutable,
           session.toolsDirectory()
               .resolve(SESSION_BWRAP_FILE_NAME),
@@ -136,7 +136,7 @@ final class BwrapSandboxedProcessLauncher {
   }
 
   private static void releasePartialLaunchResources(
-      BwrapSessionStore.Session session,
+      BwrapSession session,
       SandboxProxyServer proxy,
       Optional<ControlPlaneRelay> controlPlaneRelay,
       Process process,

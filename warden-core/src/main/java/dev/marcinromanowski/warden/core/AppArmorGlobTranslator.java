@@ -21,12 +21,13 @@ final class AppArmorGlobTranslator {
 
   static String toAppArmorPattern(RulePath target) {
     StringBuilder pattern = new StringBuilder();
-    for (GlobToken token : GlobPattern.parse(Preconditions.nonNull(target, "target").pattern())) {
+    RulePath required = Preconditions.nonNull(target, "target");
+    for (GlobToken token : GlobPattern.parse(required.pattern())) {
       switch (token) {
-        case GlobToken.Literal literal -> AppArmorPathEscaping.appendLiteral(pattern, literal.codePoint());
-        case GlobToken.Wildcard.ANY_PATH -> pattern.append("**");
-        case GlobToken.Wildcard.ANY_SEGMENT -> pattern.append('*');
-        case GlobToken.Wildcard.SINGLE_CHARACTER -> pattern.append('?');
+        case GlobLiteral literal -> AppArmorPathEscaping.appendLiteral(pattern, literal.codePoint());
+        case GlobWildcard.ANY_PATH -> pattern.append("**");
+        case GlobWildcard.ANY_SEGMENT -> pattern.append('*');
+        case GlobWildcard.SINGLE_CHARACTER -> pattern.append('?');
       }
     }
     return absolute(pattern.toString());

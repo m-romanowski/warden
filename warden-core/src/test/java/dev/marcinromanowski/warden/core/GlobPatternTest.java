@@ -14,7 +14,7 @@ class GlobPatternTest {
 
   @ParameterizedTest
   @ValueSource(strings = {"**/*.{pem,key}", "**/[.]env", "/w/{a,b}/**", "/w/x[0-9].pem"})
-  void refusesAConstructNeitherPolicyLanguageHas(String pattern) {
+  void refusesTheConstructNeitherPolicyLanguageHas(String pattern) {
     assertThatThrownBy(() -> GlobPattern.parse(pattern))
         .isInstanceOf(SandboxRuleRejectedException.class)
         .asInstanceOf(InstanceOfAssertFactories.type(SandboxRuleRejectedException.class))
@@ -33,11 +33,11 @@ class GlobPatternTest {
   }
 
   @Test
-  void acceptsTheEscapedSpellingOfARefusedConstruct() {
+  void acceptsTheEscapedSpellingOfTheRefusedConstruct() {
     assertThat(GlobPattern.parse("/w/a\\{b"))
         .containsExactly(
-            new GlobToken.Literal('/'), new GlobToken.Literal('w'), new GlobToken.Literal('/'),
-            new GlobToken.Literal('a'), new GlobToken.Literal('{'), new GlobToken.Literal('b')
+            new GlobLiteral('/'), new GlobLiteral('w'), new GlobLiteral('/'),
+            new GlobLiteral('a'), new GlobLiteral('{'), new GlobLiteral('b')
         );
   }
 
@@ -45,20 +45,20 @@ class GlobPatternTest {
   void readsTheSupportedWildcardsAsWildcardsAndEverythingElseAsItself() {
     assertThat(GlobPattern.parse("**/a*b?c"))
         .containsExactly(
-            GlobToken.Wildcard.ANY_PATH, new GlobToken.Literal('/'), new GlobToken.Literal('a'),
-            GlobToken.Wildcard.ANY_SEGMENT, new GlobToken.Literal('b'),
-            GlobToken.Wildcard.SINGLE_CHARACTER, new GlobToken.Literal('c')
+            GlobWildcard.ANY_PATH, new GlobLiteral('/'), new GlobLiteral('a'),
+            GlobWildcard.ANY_SEGMENT, new GlobLiteral('b'),
+            GlobWildcard.SINGLE_CHARACTER, new GlobLiteral('c')
         );
   }
 
   @Test
   void readsAnEscapedWildcardAsTheCharacterItIs() {
     assertThat(GlobPattern.parse("a\\*b"))
-        .containsExactly(new GlobToken.Literal('a'), new GlobToken.Literal('*'), new GlobToken.Literal('b'));
+        .containsExactly(new GlobLiteral('a'), new GlobLiteral('*'), new GlobLiteral('b'));
   }
 
   @Test
-  void refusesAPatternEndingInAnEscapeWithNothingToEscape() {
+  void refusesThePatternEndingInAnEscapeWithNothingToEscape() {
     assertThatThrownBy(() -> GlobPattern.parse("/w/trailing\\"))
         .isInstanceOf(SandboxRuleRejectedException.class)
         .hasMessageContaining("backslash");
@@ -66,17 +66,18 @@ class GlobPatternTest {
 
   @Test
   void quotesTheHomeDirectoryItSubstitutesRatherThanSplicingIt() {
-    String pattern = RulePath.glob("${user.home}/.aws/credentials").pattern();
+    RulePath substituted = RulePath.glob("${user.home}/.aws/credentials");
+    RulePath spelledOut = RulePath.literal(System.getProperty("user.home") + "/.aws/credentials");
 
-    assertThat(GlobPattern.parse(pattern))
-        .containsExactlyElementsOf(GlobPattern.parse(RulePath.literal(System.getProperty("user.home") + "/.aws/credentials").pattern()));
+    assertThat(GlobPattern.parse(substituted.pattern()))
+        .containsExactlyElementsOf(GlobPattern.parse(spelledOut.pattern()));
   }
 
   @Test
-  void literalAndGlobDisagreeAboutAWildcardAndAboutNothingElse() {
+  void literalAndGlobDisagreeAboutTheWildcardAndAboutNothingElse() {
     assertThat(GlobPattern.parse(RulePath.literal("/w/My*Project").pattern()))
         .containsExactlyElementsOf(GlobPattern.parse("/w/My\\*Project"));
     assertThat(GlobPattern.parse(RulePath.glob("/w/My*Project").pattern()))
-        .contains(GlobToken.Wildcard.ANY_SEGMENT);
+        .contains(GlobWildcard.ANY_SEGMENT);
   }
 }

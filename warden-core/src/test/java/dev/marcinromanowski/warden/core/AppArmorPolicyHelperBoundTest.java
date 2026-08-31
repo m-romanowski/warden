@@ -49,7 +49,7 @@ class AppArmorPolicyHelperBoundTest {
   }
 
   @Test
-  void refusesABodyThatWouldDeclareAProfileOfItsOwn() throws IOException {
+  void refusesTheBodyThatWouldDeclareItsOwnProfile() throws IOException {
     String sessionId = newSessionId();
     String escaping = "  /** r,\n}\nprofile " + VENDOR_PROFILE + " flags=(complain) {\n  /** rwmlkix,\n";
 
@@ -65,7 +65,7 @@ class AppArmorPolicyHelperBoundTest {
   }
 
   @Test
-  void refusesABodyThatWouldSpliceInAFileOfItsOwn() throws IOException {
+  void refusesTheBodyThatWouldSpliceInItsOwnFile() throws IOException {
     String sessionId = newSessionId();
 
     SandboxExecResult angled = helper("load", sessionId, "  #include </etc/apparmor.d/usr.bin.man>\n  /** r,\n");
@@ -98,7 +98,7 @@ class AppArmorPolicyHelperBoundTest {
   }
 
   @Test
-  void loadsABodyWhoseRulePathsMerelyContainTheWordInclude() throws IOException {
+  void loadsTheBodyWhoseRulePathsMerelyContainTheWordInclude() throws IOException {
     String sessionId = newSessionId();
 
     SandboxExecResult loaded = helper("load", sessionId, "  #include <abstractions/base>\n  /usr/include/** r,\n");
@@ -110,10 +110,10 @@ class AppArmorPolicyHelperBoundTest {
   }
 
   @Test
-  void namesAProfileAnIncludedFileDeclaresAndNotOnlyTheOneWrittenAroundIt(
+  void namesTheProfileAnIncludedFileDeclaresAndNotOnlyTheOneWrittenAroundIt(
       @TempDir Path tempDir
   ) throws IOException {
-    Optional<Path> declaring = anAbstractionThatDeclaresAProfile();
+    Optional<Path> declaring = firstAbstractionThatDeclaresProfile();
     assumeTrue(declaring.isPresent(), "this distribution ships no abstraction that declares a profile");
     String wrapper = "warden-sandbox-" + newSessionId();
     Path policy = tempDir.resolve("policy");
@@ -137,7 +137,7 @@ class AppArmorPolicyHelperBoundTest {
   }
 
   @Test
-  void refusesEveryArgumentThatIsNotASessionIdOfItsOwnShape() throws IOException {
+  void refusesEveryArgumentThatIsNotShapedLikeItsOwnSessionId() throws IOException {
     List<String> rejected = List.of(
         "/var/lib/warden/apparmor/anything", "../../etc/apparmor.d/usr.bin.man", "", "0123456789ABCDEF0123456789abcdef",
         "0123456789abcdef0123456789abcde"
@@ -176,19 +176,19 @@ class AppArmorPolicyHelperBoundTest {
     return AaStatusProfiles.parse(status.output());
   }
 
-  private static Optional<Path> anAbstractionThatDeclaresAProfile() throws IOException {
+  private static Optional<Path> firstAbstractionThatDeclaresProfile() throws IOException {
     Path abstractions = Path.of("/etc/apparmor.d/abstractions");
     if (!Files.isDirectory(abstractions)) {
       return Optional.empty();
     }
     try (Stream<Path> entries = Files.walk(abstractions)) {
       return entries.filter(Files::isRegularFile)
-          .filter(AppArmorPolicyHelperBoundTest::declaresAProfile)
+          .filter(AppArmorPolicyHelperBoundTest::declaresProfile)
           .findFirst();
     }
   }
 
-  private static boolean declaresAProfile(Path abstraction) {
+  private static boolean declaresProfile(Path abstraction) {
     try {
       return Files.readAllLines(abstraction)
           .stream()

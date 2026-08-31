@@ -66,7 +66,7 @@ class SeatbeltGlobTranslatorTest {
       "'/w/back\\slash','/w/back\\slash',true",
       "'/w/back\\slash',/w/backslash,false"
   })
-  void readsEveryCharacterOfALiteralPathAsItself(String path, String candidate, boolean expectedMatch) {
+  void readsEveryCharacterOfTheLiteralPathAsItself(String path, String candidate, boolean expectedMatch) {
     String regex = SeatbeltGlobTranslator.toRegex(RulePath.literal(path));
 
     assertThat(Pattern.matches(regex, candidate))
@@ -81,13 +81,13 @@ class SeatbeltGlobTranslatorTest {
   }
 
   @Test
-  void escapesABackslashRatherThanLettingItCollapse() {
+  void escapesBackslashesRatherThanLettingThemCollapse() {
     assertThat(SeatbeltGlobTranslator.toRegex(RulePath.literal("/w/back\\slash")))
         .isEqualTo("^/w/back\\\\slash$");
   }
 
   @Test
-  void refusesANulByteBecauseNoPathCanHoldOne() {
+  void refusesNulBytesBecauseNoPathCanHoldOne() {
     assertThatThrownBy(() -> SeatbeltGlobTranslator.toRegex(RulePath.glob("/w/evil\0/**")))
         .isInstanceOf(SandboxRuleRejectedException.class)
         .hasMessageContaining("NUL");

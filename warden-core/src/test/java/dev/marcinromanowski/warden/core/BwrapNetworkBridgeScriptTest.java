@@ -28,7 +28,7 @@ class BwrapNetworkBridgeScriptTest {
   }
 
   @Test
-  void runsASocatThatLivesUnderAPathWithASpaceInIt(@TempDir Path tempDirParameter) throws IOException {
+  void runsTheSocatThatLivesUnderThePathContainingSpaces(@TempDir Path tempDirParameter) throws IOException {
     Path tools = tempDirParameter.resolve("my tools");
     Files.createDirectories(tools);
     Path socat = tools.resolve("socat stub");
