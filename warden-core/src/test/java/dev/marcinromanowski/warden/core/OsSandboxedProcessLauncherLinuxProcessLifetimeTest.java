@@ -30,6 +30,9 @@ class OsSandboxedProcessLauncherLinuxProcessLifetimeTest {
   private static final URI CONTROL_PLANE_HINT = URI.create("http://127.0.0.1:9876");
   private static final int EGRESS_BRIDGE_ONLY = 1;
   private static final int EGRESS_AND_CONTROL_PLANE_BRIDGES = 2;
+  private static final String SANDBOX_INIT_PID = "1";
+  private static final String HOST_PID_RESULT = "HOST-PID-SIGNAL";
+  private static final String SANDBOX_PID_RESULT = "SANDBOX-PID-SIGNAL";
 
   @Test
   void leavesNothingRunningInTheSessionNamespaceOnceThePayloadExits(
@@ -71,6 +74,38 @@ class OsSandboxedProcessLauncherLinuxProcessLifetimeTest {
         .as("a forcible teardown leaves nothing in the sandbox running to do the cleaning up, so"
             + " nothing may depend on something in there having done it")
         .isEmpty();
+  }
+
+  @Test
+  void leavesNoHostProcessNameableFromInsideTheSandbox(
+      @TempDir Path tempDirParameter
+  ) throws IOException {
+    Path logFile = Files.createTempFile("warden-lifetime-pid-space-", ".log");
+    long hostPid = ProcessHandle.current()
+        .pid();
+    String probe = String.join(
+        "; ",
+        "kill -0 " + hostPid + " 2>/dev/null",
+        "echo " + HOST_PID_RESULT + "=$?",
+        "kill -0 " + SANDBOX_INIT_PID + " 2>/dev/null",
+        "echo " + SANDBOX_PID_RESULT + "=$?"
+    );
+
+    try (SandboxedProcess process = launch(tempDirParameter.toRealPath(), logFile, Optional.empty(), probe)) {
+      assertThat(process.waitFor(LAUNCH_TIMEOUT))
+          .as("the sandboxed process did not terminate in time")
+          .isTrue();
+    }
+
+    String output = Files.readString(logFile);
+    assertThat(output)
+        .as("a pid the host is running has to name nothing inside the sandbox, so what keeps a"
+            + " signal from reaching a host process is the pid namespace and not a loaded policy")
+        .contains(HOST_PID_RESULT + "=1");
+    assertThat(output)
+        .as("signalling is not refused wholesale in there - the sandbox's own init answers, which is"
+            + " what makes the refusal above a statement about the pid space")
+        .contains(SANDBOX_PID_RESULT + "=0");
   }
 
   private static void assertTheSessionNamespaceEmptiesOut(

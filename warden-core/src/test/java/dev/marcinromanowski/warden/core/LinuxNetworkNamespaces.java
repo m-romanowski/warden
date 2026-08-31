@@ -2,6 +2,7 @@ package dev.marcinromanowski.warden.core;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -65,7 +66,7 @@ final class LinuxNetworkNamespaces {
     try {
       Path commandLine = PROC.resolve(Long.toString(pid))
           .resolve("cmdline");
-      String raw = Files.readString(commandLine);
+      String raw = new String(Files.readAllBytes(commandLine), StandardCharsets.UTF_8);
       return Stream.of(raw.split(ARGUMENT_SEPARATOR))
           .filter(argument -> !argument.isEmpty())
           .toList();

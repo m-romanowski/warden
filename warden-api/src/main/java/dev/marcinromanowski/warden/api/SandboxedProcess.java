@@ -20,7 +20,12 @@ public interface SandboxedProcess extends AutoCloseable {
   /** The process's exit code, if it has already terminated. */
   Optional<Integer> exitCode();
 
-  /** Requests termination, allowing the process (and any descendants) a chance to shut down cleanly. */
+  /**
+   * Requests termination, allowing the process (and any descendants) a chance to shut down
+   * cleanly. A request rather than a kill: a process that installs no handler for it, or declines
+   * to act on it, keeps running. {@link #close()} is what bounds that grace, escalating to
+   * {@link #destroyForcibly()} once it runs out.
+   */
   void destroy();
 
   /** Forcibly terminates the process and any descendants. */

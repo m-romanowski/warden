@@ -44,6 +44,16 @@ final class BwrapArgvGenerator {
     return argv;
   }
 
+  // --unshare-pid without --as-pid-1, so bwrap runs its own init as pid 1 and the payload is pid 2:
+  // an ordinary process with ordinary signal dispositions, not the namespace's init. The namespace
+  // is what bounds a session's processes to the session. Everything the bridge entrypoint
+  // backgrounds before it execs the payload outlives that exec, and the kernel reaps it with the
+  // namespace when pid 1 goes - on every exit path, including a SIGKILL that no in-sandbox
+  // supervisor could survive to clean up after.
+  //
+  // The pairing is load-bearing for teardown as well: a namespace's init ignores any signal it
+  // installs no handler for, so a payload made pid 1 would be beyond the reach of a graceful
+  // termination request. See BwrapSandboxedProcess.destroy().
   private static void appendNamespaceAndBootstrap(List<String> argv) {
     argv.add("--unshare-net");
     argv.add("--unshare-pid");

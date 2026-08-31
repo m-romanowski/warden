@@ -80,15 +80,17 @@ sequenceDiagram
     participant Caller as warden (JVM)
     participant Kernel as Kernel / AppArmor
     participant Bwrap as bwrap
-    participant Target as unique target binary<br/>(a fresh per-session /bin/sh copy)
-    participant Sandboxed as real sandboxed command
+    participant Init as bwrap's own init<br/>(pid 1 of the new pid namespace)
+    participant Target as unique target binary<br/>(a fresh per-session /bin/sh copy, pid 2)
+    participant Sandboxed as real sandboxed command<br/>(that same pid 2, after exec)
 
     Caller->>Caller: copy /bin/sh and the caller's bwrap<br/>to fresh, unique per-session paths
     Caller->>Kernel: generate + load one file holding this session's<br/>bwrap profile, its unprivileged twin,<br/>and its filesystem profile
     Caller->>Bwrap: exec(session bwrap copy, ...flags, -- unique-target, bridge-script, command)
     Note over Bwrap,Kernel: confined by warden's own profile,<br/>attached to that session's bwrap path
-    Bwrap->>Bwrap: create new user+mount+net<br/>namespaces (--unshare-net)
-    Bwrap->>Target: exec(unique-target-binary)
+    Bwrap->>Bwrap: create new user+mount+net+pid namespaces<br/>(--unshare-net, --unshare-pid)
+    Bwrap->>Init: fork the pid namespace's init
+    Init->>Target: exec(unique-target-binary)
     Kernel->>Kernel: px rule matches this exact path,<br/>stacks: bwrap // &unpriv // &profile
     Target->>Sandboxed: exec(bridge-script, then the real command)
     Note over Sandboxed,Kernel: every filesystem access from here on is evaluated<br/>lazily against the full stacked profile
@@ -180,7 +182,7 @@ flowchart LR
         controlsock[["control.sock"]]
     end
 
-    subgraph sandbox["Sandboxed process (isolated network namespace, only lo reachable)"]
+    subgraph sandbox["Sandboxed process (isolated network and pid namespaces, only lo reachable)"]
         egress["socat: egress bridge<br/>(TCP-LISTEN &rarr; UNIX-CONNECT)"]
         cpbridge["socat: control-plane bridge<br/>(UNIX-LISTEN &rarr; TCP)"]
         target["Sandboxed process<br/>(HTTP_PROXY points at the egress bridge)"]

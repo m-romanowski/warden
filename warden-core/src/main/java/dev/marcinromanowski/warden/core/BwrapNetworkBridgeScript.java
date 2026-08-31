@@ -10,6 +10,10 @@ import java.util.Optional;
 // control-plane port back out the same way, waits for both to be ready, then execs the real
 // command. Pure string generation - no filesystem/process side effects here.
 //
+// Nothing here stops the backgrounded socats: the exec replaces the shell that owns them, and they
+// outlive the payload. Their lifetime is the sandbox's pid namespace instead - see
+// BwrapArgvGenerator.
+//
 // socat is named by the absolute path the caller's resolver produced, never by bare name. Inside the
 // sandbox PATH resolves against whatever the bootstrap binds happen to expose, so a bare name would
 // silently pick a different socat than the one the embedder resolved and vouched for, or find none

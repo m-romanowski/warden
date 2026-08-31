@@ -14,6 +14,8 @@ import java.util.concurrent.TimeUnit;
 // of these down together, in the reverse order they were established.
 //
 // Process-tree-aware teardown, same reasoning as OsSandboxedProcess documents for its own close().
+// The tree is deeper here than on macOS: bwrap runs the payload as pid 2 of a fresh pid namespace,
+// beside an init of bwrap's own at pid 1, so the process this class holds is never the payload.
 final class BwrapSandboxedProcess implements SandboxedProcess {
 
   private static final Duration GRACEFUL_SHUTDOWN_TIMEOUT = Duration.ofSeconds(5);
@@ -60,11 +62,14 @@ final class BwrapSandboxedProcess implements SandboxedProcess {
     }
   }
 
+  // Deliberately does not signal the process warden holds. That one is bwrap, which installs no
+  // SIGTERM handler, and --die-with-parent takes the pid namespace's init down with it - the kernel
+  // then kills the payload where it stands, mid-handler. Everything that has to receive the request
+  // is inside the namespace already, and bwrap exits on its own once the payload has.
   @Override
   public void destroy() {
     descendants()
         .forEach(ProcessHandle::destroy);
-    process.destroy();
   }
 
   @Override

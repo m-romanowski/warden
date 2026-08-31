@@ -108,6 +108,20 @@ class BwrapArgvGeneratorTest {
         .hasMessageContaining("/usr");
   }
 
+  @Test
+  void unsharesThePidNamespaceThatBoundsEachSessionsProcessesToIt() {
+    assertThat(generate(List.of()))
+        .contains("--unshare-pid");
+  }
+
+  @Test
+  void leavesThePayloadOutOfTheInitRoleThatPidNamespaceCreates() {
+    assertThat(generate(List.of()))
+        .as("a pid namespace's init ignores any signal it installs no handler for, so a payload"
+            + " made pid 1 would be beyond the reach of a graceful termination request")
+        .doesNotContain("--as-pid-1");
+  }
+
   private static List<String> generate(List<PathMount> pathMounts) {
     return BwrapArgvGenerator.generate(SANDBOX_ROOT, pathMounts, TARGET_BINARY, BRIDGE_MOUNT, COMMAND);
   }
