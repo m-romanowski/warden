@@ -246,6 +246,13 @@ The privilege model is two-tier: a one-time, privileged (`sudo`) install step pe
 afterward. That step creates warden's state directories, installs a root-owned helper, and
 grants the daemon user passwordless sudo for that one command.
 
+**Re-run that step on every warden upgrade.** The helper on disk is a copy taken at install
+time, so upgrading the jar alone leaves the old one in place, and a helper older than the
+library refuses the policy the library generates. The helper carries a contract number, checked
+at the top of every Linux launch before any session state is created, so the mismatch is
+reported up front and names the install step instead of surfacing as a refusal from inside
+the helper.
+
 The helper exists because the grant cannot be narrowed in sudoers itself. sudo-rs, the
 default sudo on Ubuntu 25.10 and later, rejects a wildcard in a command argument outright,
 so `apparmor_parser -r <directory>/*` is not a rule that loads at all - and naming the bare

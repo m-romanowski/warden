@@ -2,6 +2,9 @@ package dev.marcinromanowski.warden.core;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Optional;
 
 // Renders the literal characters of a path into the byte alphabet an AppArmor rule clause can
 // carry, and back.
@@ -76,6 +79,33 @@ final class AppArmorPathEscaping {
     }
   }
 
+  static Optional<List<AppArmorPathByte>> splitIntoBytes(String escapedLiteral) {
+    List<AppArmorPathByte> bytes = new ArrayList<>();
+    int index = 0;
+    while (index < escapedLiteral.length()) {
+      char current = escapedLiteral.charAt(index);
+      if (current != ESCAPE && !isInert(current)) {
+        return Optional.empty();
+      }
+      if (current != ESCAPE) {
+        bytes.add(new AppArmorPathByte(String.valueOf(current), ESCAPE + octalDigits(current)));
+        index++;
+        continue;
+      }
+      int nextIndex = index + 1 + OCTAL_DIGITS;
+      if (nextIndex > escapedLiteral.length()) {
+        return Optional.empty();
+      }
+      String run = escapedLiteral.substring(index, nextIndex);
+      if (!isOctalDigits(run.substring(1))) {
+        return Optional.empty();
+      }
+      bytes.add(new AppArmorPathByte(run, run));
+      index = nextIndex;
+    }
+    return Optional.of(List.copyOf(bytes));
+  }
+
   static String unescape(String escapedPattern) {
     StringBuilder unescaped = new StringBuilder(escapedPattern.length());
     int index = 0;
@@ -122,6 +152,16 @@ final class AppArmorPathEscaping {
   private static String octalDigits(int octet) {
     String digits = Integer.toOctalString(octet);
     return "0".repeat(OCTAL_DIGITS - digits.length()) + digits;
+  }
+
+  private static boolean isOctalDigits(String digits) {
+    for (int index = 0; index < digits.length(); index++) {
+      char digit = digits.charAt(index);
+      if (digit < '0' || digit > '7') {
+        return false;
+      }
+    }
+    return true;
   }
 
   private static boolean isInert(int octet) {

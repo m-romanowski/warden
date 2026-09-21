@@ -99,6 +99,16 @@ final class AppArmorProfileGenerator {
   // binaries can run. bwrap's own BOOTSTRAP_READ_ONLY_PATHS already makes this exact path set
   // visible read-only regardless.
   //
+  // ssl_certs is included because without it TLS does not work inside the sandbox at all, and the
+  // failure names nothing a caller can act on: the individual certificates are reachable through
+  // "/usr/share/**" while the concatenated bundle every OpenSSL client actually opens is not, so
+  // curl reports "error adding trust anchors" and stops. Measured on Ubuntu, against this bootstrap
+  // plus one workspace allow. The Seatbelt bootstrap has granted its own trust store from the start,
+  // so a payload a caller shipped unchanged worked on one platform and failed on the other. The
+  // abstraction is the distribution's own and names the trust store rather than a tree, which is why
+  // it is included rather than spelled out here - a hardcoded path would be this distribution's and
+  // the file's whole point is that the distribution owns that answer.
+  //
   // The blanket "network," rule mirrors this file's own header note that network is deliberately
   // out of scope for AppArmor: real egress reachability is bwrap's --unshare-net boundary alone,
   // so this only grants the socket()/bind() syscalls the in-sandbox bridge socats need to talk to
@@ -107,6 +117,7 @@ final class AppArmorProfileGenerator {
   private static final String BOOTSTRAP_ALLOWANCES =
       """
       #include <abstractions/base>
+      #include <abstractions/ssl_certs>
       network,
       /bin/** rix,
       /usr/bin/** rix,
@@ -195,12 +206,15 @@ final class AppArmorProfileGenerator {
     // silently re-cover them (see AppArmorDenyGlobExclusion's own header for the full "why" and the
     // rewrite it does - AppArmor's "priority=" qualifier is not used anywhere in a generated
     // profile, for a caller's rules or for warden's own).
-    List<String> higherPriorityLiteralAllows = new ArrayList<>();
+    List<HigherPriorityLiteralAllow> higherPriorityLiteralAllows = new ArrayList<>();
     for (FilesystemRule rule : requiredRules) {
       appendRuleClause(profile, rule, higherPriorityLiteralAllows);
       String translatedPattern = AppArmorGlobTranslator.toAppArmorPattern(rule.target());
       if (effectiveDecisionIsAllow(rule.decision()) && isLiteralPattern(translatedPattern)) {
-        higherPriorityLiteralAllows.add(translatedPattern);
+        higherPriorityLiteralAllows.add(new HigherPriorityLiteralAllow(
+            translatedPattern,
+            accessMode(rule.accessKinds(), true)
+        ));
       }
     }
     return profile.toString();
@@ -304,7 +318,11 @@ final class AppArmorProfileGenerator {
     );
   }
 
-  private static void appendRuleClause(StringBuilder profile, FilesystemRule rule, List<String> higherPriorityLiteralAllows) {
+  private static void appendRuleClause(
+      StringBuilder profile,
+      FilesystemRule rule,
+      List<HigherPriorityLiteralAllow> higherPriorityLiteralAllows
+  ) {
     String pattern = AppArmorGlobTranslator.toAppArmorPattern(rule.target());
     boolean isAllow = effectiveDecisionIsAllow(rule.decision());
     String mode = accessMode(rule.accessKinds(), isAllow);
@@ -313,7 +331,11 @@ final class AppArmorProfileGenerator {
     for (AppArmorRuleSpelling spelling : spellings(pattern, mode, isAllow, grantsDirectoryListing(rule))) {
       List<String> patterns = isAllow
           ? List.of(spelling.pattern())
-          : denyPatternsExcludingHigherPriorityAllows(spelling.pattern(), higherPriorityLiteralAllows);
+          : denyPatternsExcludingHigherPriorityAllows(
+              spelling.pattern(),
+              spelling.mode(),
+              higherPriorityLiteralAllows
+          );
       for (String emittedPattern : patterns) {
         profile.append("  ")
             .append(clauseVerb)
@@ -404,12 +426,16 @@ final class AppArmorProfileGenerator {
   // parses differently ("!" for negation, "^" as a literal character) - reusing it there would
   // silently produce wrong matches. The realistic case (a caller wanting to carve out one
   // specific exception at a time) doesn't need more than this.
-  private static List<String> denyPatternsExcludingHigherPriorityAllows(String denyPattern, List<String> higherPriorityLiteralAllows) {
-    for (String literalAllow : higherPriorityLiteralAllows) {
-      if (!matches(denyPattern, AppArmorPathEscaping.unescape(literalAllow))) {
+  private static List<String> denyPatternsExcludingHigherPriorityAllows(
+      String denyPattern,
+      String denyMode,
+      List<HigherPriorityLiteralAllow> higherPriorityLiteralAllows
+  ) {
+    for (HigherPriorityLiteralAllow allow : higherPriorityLiteralAllows) {
+      if (!allow.covers(denyMode) || !matches(denyPattern, AppArmorPathEscaping.unescape(allow.pattern()))) {
         continue;
       }
-      Optional<List<String>> excluded = AppArmorDenyGlobExclusion.excludeLiteralPath(denyPattern, literalAllow);
+      Optional<List<String>> excluded = AppArmorDenyGlobExclusion.excludeLiteralPath(denyPattern, allow.pattern());
       if (excluded.isPresent()) {
         return excluded.get();
       }

@@ -8,6 +8,7 @@ import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Optional;
+import java.util.stream.Stream;
 
 // The AppArmor policy one Linux session loads: bwrap's own confinement profile, the
 // capability-stripping profile stacked with it, and the payload's filesystem profile, all loaded
@@ -37,7 +38,9 @@ import java.util.Optional;
 final class AppArmorSessionPolicy {
 
   static final Path POLICY_HELPER = Path.of("/usr/local/sbin/warden-apparmor-policy");
-
+  private static final List<String> POLICY_HELPER_CONTRACTS = List.of("2");
+  private static final String CONTRACT_MARKER = "warden-policy-helper-contract:";
+  private static final int CONTRACT_SEARCH_LINE_LIMIT = 64;
   private static final String LOAD_ACTION = "load";
   private static final String UNLOAD_ACTION = "unload";
   private static final int WORLD_WRITABLE_MODE_BITS = 0b000_010_010;
@@ -73,8 +76,9 @@ final class AppArmorSessionPolicy {
     String message = "Linux sandboxing requires a one-time install step"
         + " (see scripts/install-apparmor-policy.sh) before any session can launch: it creates "
         + BwrapSessionStore.SESSIONS_DIRECTORY + ", writable by this user, and installs the"
-        + " root-owned " + POLICY_HELPER + " with a passwordless sudo grant for it. Problem: "
-        + missing.get() + ".";
+        + " root-owned " + POLICY_HELPER + " with a passwordless sudo grant for it. Re-run that"
+        + " step from the warden release you are running whenever you upgrade the library."
+        + " Problem: " + missing.get() + ".";
     throw new SandboxEstablishmentException(message);
   }
 
@@ -86,7 +90,44 @@ final class AppArmorSessionPolicy {
     if (!Files.isExecutable(POLICY_HELPER)) {
       return Optional.of(POLICY_HELPER + " is missing or not executable");
     }
-    return rootOwnedAndOnlyRootWritable(POLICY_HELPER);
+    Optional<String> ownership = rootOwnedAndOnlyRootWritable(POLICY_HELPER);
+    if (ownership.isPresent()) {
+      return ownership;
+    }
+    return contractMismatch(POLICY_HELPER);
+  }
+
+  static Optional<String> contractMismatch(Path helper) {
+    Optional<String> declared;
+    try {
+      declared = declaredContract(helper);
+    } catch (IOException e) {
+      return Optional.of("could not read " + helper + ": " + e);
+    }
+    if (declared.isEmpty()) {
+      return Optional.of(
+          helper + " predates the contract this library checks for and was installed by an older"
+              + " warden release, so it will refuse the policy this one generates"
+      );
+    }
+    if (POLICY_HELPER_CONTRACTS.contains(declared.get())) {
+      return Optional.empty();
+    }
+    return Optional.of(
+        helper + " declares contract " + declared.get() + ", and this warden release generates"
+            + " policy for contract " + POLICY_HELPER_CONTRACTS
+    );
+  }
+
+  private static Optional<String> declaredContract(Path helper) throws IOException {
+    try (Stream<String> lines = Files.lines(helper)) {
+      return lines.limit(CONTRACT_SEARCH_LINE_LIMIT)
+          .filter(line -> line.contains(CONTRACT_MARKER))
+          .map(line -> line.substring(line.indexOf(CONTRACT_MARKER) + CONTRACT_MARKER.length())
+              .trim()
+          )
+          .findFirst();
+    }
   }
 
   static Optional<String> rootOwnedAndOnlyRootWritable(Path path) {

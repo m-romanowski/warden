@@ -456,7 +456,40 @@ class AppArmorProfileGeneratorTest {
         .as("the literal exception must never be re-covered by the broader deny glob")
         .doesNotContain("deny /**/.env.example r,")
         .doesNotContain("deny /**/.env* r,")
-        .contains("deny /**/.env.example?* r,");
+        .contains("deny /workspace/.env.example?* r,")
+        .contains("deny /workspace/**/.env* r,")
+        .contains("deny /w[^\\157]**/.env* r,");
+  }
+
+  @Test
+  void readOnlyAllowDoesNotCarveItsExceptionOutOfTheWriteDeny() {
+    FilesystemRule allowReadOfOneFile = rule(
+        Set.of(AccessKind.READ), RulePath.literal("/workspace/cert.pem"), Decision.ALLOW
+    );
+    FilesystemRule denyReadOfTheGlob = rule(Set.of(AccessKind.READ), RulePath.glob("**/*.pem"), Decision.DENY);
+    FilesystemRule denyWriteOfTheGlob = rule(Set.of(AccessKind.WRITE), RulePath.glob("**/*.pem"), Decision.DENY);
+
+    String profile = generate(List.of(allowReadOfOneFile, denyReadOfTheGlob, denyWriteOfTheGlob));
+
+    assertThat(profile)
+        .as("the read deny is carved, because the allow grants read")
+        .doesNotContain("deny /**/*.pem r,");
+    assertThat(profile)
+        .as("the write deny is untouched, because no allow gave write back")
+        .contains("deny /**/*.pem w,");
+  }
+
+  @Test
+  void anAllowCoveringEveryDeniedAccessStillCarvesTheException() {
+    FilesystemRule allowReadWrite = rule(
+        Set.of(AccessKind.READ, AccessKind.WRITE), RulePath.literal("/workspace/cert.pem"), Decision.ALLOW
+    );
+    FilesystemRule denyWriteOfTheGlob = rule(Set.of(AccessKind.WRITE), RulePath.glob("**/*.pem"), Decision.DENY);
+
+    String profile = generate(List.of(allowReadWrite, denyWriteOfTheGlob));
+
+    assertThat(profile)
+        .doesNotContain("deny /**/*.pem w,");
   }
 
   @Test

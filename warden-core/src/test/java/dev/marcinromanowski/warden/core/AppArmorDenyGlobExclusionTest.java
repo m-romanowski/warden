@@ -9,53 +9,109 @@ import org.junit.jupiter.api.Test;
 class AppArmorDenyGlobExclusionTest {
 
   @Test
-  void excludesOneLiteralFromTrailingStarGlob() {
-    Optional<List<String>> result = AppArmorDenyGlobExclusion.excludeLiteralPath("/**/.env*", "/workspace/.env.example");
+  void recursiveDenyEndingInAnExtensionExemptsExactlyTheOnePath() {
+    List<String> clauses = carve("/**/*.pem", "/private/etc/ssl/cert.pem");
 
-    assertThat(result)
-        .isPresent();
-    assertThat(result.get())
-        .contains("/**/.env.example?*")
-        .doesNotContain("/**/.env.example");
+    List<String> stillDenied = List.of(
+        "/private/etc/ssl/cert2.pem",
+        "/private/etc/ssl/cert.pem.pem",
+        "/private/etc/ssl/ce.pem",
+        "/private/etc/ssl/cert/cert.pem",
+        "/private/etc/ssl2/cert.pem",
+        "/private/etc/cert.pem",
+        "/tmp/other/cert.pem"
+    );
+
+    assertThat(denied(clauses, "/private/etc/ssl/cert.pem"))
+        .isFalse();
+    assertThat(stillDenied)
+        .allMatch(path -> denied(clauses, path));
+    assertThat(denied(clauses, "/private/etc/ssl/cert.pe"))
+        .isFalse();
   }
 
   @Test
-  void excludesOneLiteralFromLeadingStarGlob() {
-    Optional<List<String>> result = AppArmorDenyGlobExclusion.excludeLiteralPath("/**/*.pem", "/workspace/safe.pem");
-
-    assertThat(result)
-        .isPresent();
-    assertThat(result.get())
-        .contains("/**/safe?*.pem")
-        .doesNotContain("/**/safe.pem");
+  void recursiveDenyAlsoCoversTheRootLevelDepthItsOwnPatternMisses() {
+    assertThat(denied(carve("/**/*.pem", "/private/etc/ssl/cert.pem"), "/cert.pem"))
+        .isTrue();
   }
 
   @Test
-  void eliminatesTheDenyEntirelyWhenItIsExactlyTheExcludedLiteral() {
-    Optional<List<String>> result = AppArmorDenyGlobExclusion.excludeLiteralPath("/**/.env", "/workspace/.env");
+  void recursiveDenyEndingInItsWildcardExemptsExactlyTheOnePath() {
+    List<String> clauses = carve("/**/.env*", "/workspace/.env.example");
 
-    assertThat(result)
+    List<String> stillDenied = List.of(
+        "/workspace/.env",
+        "/workspace/.env.example.bak",
+        "/workspace/.env.exampl",
+        "/workspace/sub/.env.example",
+        "/work/.env.example",
+        "/workspace2/.env.example"
+    );
+
+    assertThat(denied(clauses, "/workspace/.env.example"))
+        .isFalse();
+    assertThat(stillDenied)
+        .allMatch(path -> denied(clauses, path));
+    assertThat(denied(clauses, "/workspace/readme.txt"))
+        .isFalse();
+  }
+
+  @Test
+  void sameNamedFileInAnotherDirectoryStaysDenied() {
+    assertThat(denied(carve("/**/.env*", "/workspace/.env.example"), "/elsewhere/.env.example"))
+        .isTrue();
+    assertThat(denied(carve("/**/.env", "/workspace/.env"), "/elsewhere/.env"))
+        .isTrue();
+  }
+
+  @Test
+  void literalDirectoryDenyDoesNotReachIntoSubdirectories() {
+    List<String> clauses = carve("/workspace/.env*", "/workspace/.env.example");
+
+    assertThat(denied(clauses, "/workspace/.env.example"))
+        .isFalse();
+    assertThat(denied(clauses, "/workspace/.env"))
+        .isTrue();
+    assertThat(denied(clauses, "/workspace/sub/.env"))
+        .isFalse();
+  }
+
+  @Test
+  void literalDirectoryDenyExemptsTheNameThatIsOnlyItsSuffix() {
+    List<String> clauses = carve("/workspace/*.pem", "/workspace/.pem");
+
+    assertThat(denied(clauses, "/workspace/.pem"))
+        .isFalse();
+    assertThat(denied(clauses, "/workspace/a.pem"))
+        .isTrue();
+  }
+
+  @Test
+  void literalDirectoryDenyNamingOnlyTheExcludedPathLeavesNothingToDeny() {
+    assertThat(AppArmorDenyGlobExclusion.excludeLiteralPath("/workspace/.env", "/workspace/.env"))
         .contains(List.of());
   }
 
-  // Not just the recursive-anywhere "/**/" case - a literal directory prefix that exactly matches
-  // the excluded path's own directory is supported too (a real, pre-existing test elsewhere in
-  // this codebase relies on exactly this shape: a workspace-anchored deny glob like
-  // "<tempDir>/.env*", not a recursive one).
   @Test
-  void excludesOneLiteralFromTrailingStarGlobUnderLiteralMatchingDirectory() {
-    Optional<List<String>> result = AppArmorDenyGlobExclusion.excludeLiteralPath("/workspace/.env*", "/workspace/.env.example");
+  void globMetacharacterInTheExcludedPathIsExemptedOnlyAtItsRealName() {
+    List<String> clauses = carve("/**/*.pem", "/zz/a\\052b.pem");
 
-    assertThat(result)
-        .isPresent();
-    assertThat(result.get())
-        .contains("/workspace/.env.example?*")
-        .doesNotContain("/workspace/.env.example");
+    List<String> stillDenied = List.of("/zz/aXb.pem", "/zz/ab.pem", "/zz/a*b.pem.pem", "/zz/a*.pem");
+
+    assertThat(denied(clauses, "/zz/a*b.pem"))
+        .isFalse();
+    assertThat(stillDenied)
+        .allMatch(path -> denied(clauses, path));
   }
 
   @Test
-  void fallsBackToEmptyForLiteralDirectoryThatDoesNotMatchTheExcludedPathsOwnDirectory() {
-    assertThat(AppArmorDenyGlobExclusion.excludeLiteralPath("/workspace/.env*", "/elsewhere/.env.example"))
+  void fallsBackToEmptyForAnExcludedPathThatIsNotProperlyEscaped() {
+    assertThat(AppArmorDenyGlobExclusion.excludeLiteralPath("/**/*.pem", "/zz/a*b.pem"))
+        .isEmpty();
+    assertThat(AppArmorDenyGlobExclusion.excludeLiteralPath("/**/*.pem", "/zz/a\\05.pem"))
+        .isEmpty();
+    assertThat(AppArmorDenyGlobExclusion.excludeLiteralPath("/**/*.pem", "/zz/a,b.pem"))
         .isEmpty();
   }
 
@@ -66,8 +122,18 @@ class AppArmorDenyGlobExclusionTest {
   }
 
   @Test
-  void fallsBackToEmptyForFilenameGlobWithMultipleWildcards() {
+  void fallsBackToEmptyForFilenameGlobShapesTheTrieCannotExpress() {
     assertThat(AppArmorDenyGlobExclusion.excludeLiteralPath("/**/*.env*", "/workspace/foo.env.example"))
+        .isEmpty();
+    assertThat(AppArmorDenyGlobExclusion.excludeLiteralPath("/**/.en?", "/workspace/.env"))
+        .isEmpty();
+    assertThat(AppArmorDenyGlobExclusion.excludeLiteralPath("/**/*.pem/", "/workspace/cert.pem"))
+        .isEmpty();
+  }
+
+  @Test
+  void fallsBackToEmptyForLiteralDirectoryThatDoesNotMatchTheExcludedPathsOwnDirectory() {
+    assertThat(AppArmorDenyGlobExclusion.excludeLiteralPath("/workspace/.env*", "/elsewhere/.env.example"))
         .isEmpty();
   }
 
@@ -78,8 +144,22 @@ class AppArmorDenyGlobExclusionTest {
   }
 
   @Test
-  void fallsBackToEmptyWhenTheExcludedNameContainsUnsafeCharacters() {
-    assertThat(AppArmorDenyGlobExclusion.excludeLiteralPath("/**/.env*", "/workspace/.env,evil"))
-        .isEmpty();
+  void costsRoughlyTwoClausesPerEnumeratedByteOfTheExcludedPath() {
+    assertThat(carve("/**/*.pem", "/private/etc/ssl/cert.pem"))
+        .hasSize(2 * "/private/etc/ssl/cert".length());
+    assertThat(carve("/**/.env*", "/workspace/.env.example"))
+        .hasSize(2 * "/workspace".length() - 1 + 2 * ".example".length() + 1);
+  }
+
+  private static List<String> carve(String denyPattern, String excludedLiteralPath) {
+    Optional<List<String>> carved = AppArmorDenyGlobExclusion.excludeLiteralPath(denyPattern, excludedLiteralPath);
+    assertThat(carved)
+        .isPresent();
+    return carved.get();
+  }
+
+  private static boolean denied(List<String> clauses, String path) {
+    return clauses.stream()
+        .anyMatch(clause -> AppArmorPatternMatcher.matches(clause, path));
   }
 }

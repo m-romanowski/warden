@@ -44,8 +44,71 @@ class SeatbeltProfileGeneratorEnforcementTest {
   private static final String LIST_EXECUTABLE = "/bin/ls";
   private static final String BYTE_COUNT_EXECUTABLE = "/usr/bin/wc";
   private static final String TLS_ROOT_STORE = "/private/etc/ssl/cert.pem";
+  private static final String SYMLINKED_TLS_ROOT_STORE = "/etc/ssl/cert.pem";
   private static final String STAT_EXECUTABLE = "/usr/bin/stat";
+  private static final String SHELL_EXECUTABLE = "/bin/sh";
+  private static final String DEVICE_DIRECTORY = "/dev";
+  // Mode 0666, so the filesystem does not refuse it and this profile is the only thing that does.
+  // A disk node would not serve: /dev/disk0 is root:operator 0640 and is refused to an ordinary
+  // payload wide open and unsandboxed alike, which makes it evidence of nothing here.
+  private static final String WORLD_READABLE_DEVICE = "/dev/autofs_nowait";
   private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(10);
+  private static final String TERMINAL_PROBE_SOURCE =
+      """
+      #include <stdio.h>
+      #include <string.h>
+      #include <termios.h>
+      #include <unistd.h>
+      #include <fcntl.h>
+      #include <sys/ioctl.h>
+
+      static const char *outcome(int result) {
+        return result == 0 ? "granted" : "refused";
+      }
+
+      int main(void) {
+        struct termios saved;
+        struct termios raw;
+        int discipline = 0;
+        char keystroke = 'X';
+        char *name;
+        if (tcgetattr(0, &saved) != 0) {
+          printf("terminalStateUnreadable\\n");
+          return 1;
+        }
+        raw = saved;
+        cfmakeraw(&raw);
+        printf("rawMode=%s\\n", outcome(tcsetattr(0, TCSANOW, &raw)));
+        tcsetattr(0, TCSANOW, &saved);
+        printf("lineDiscipline=%s\\n", outcome(ioctl(0, TIOCGETD, &discipline)));
+        printf("keystrokeInjection=%s\\n", outcome(ioctl(0, TIOCSTI, &keystroke)));
+        name = ttyname(0);
+        printf("terminalName=%s\\n", name == NULL ? "none" : name);
+        if (name != NULL) {
+          int reopened = open(name, O_RDWR);
+          printf("terminalReopen=%s\\n", reopened < 0 ? "refused" : "granted");
+          if (reopened >= 0) {
+            close(reopened);
+          }
+        }
+        return 0;
+      }
+      """;
+  private static final String DESCRIPTOR_IOCTL_PROBE_SOURCE =
+      """
+      #include <stdio.h>
+      #include <errno.h>
+      #include <sys/disk.h>
+      #include <sys/ioctl.h>
+
+      int main(void) {
+        uint32_t blockSize = 0;
+        errno = 0;
+        ioctl(0, DKIOCGETBLOCKSIZE, &blockSize);
+        printf("inherited=%s\\n", errno == EPERM ? "EPERM" : "answered-by-the-kernel");
+        return 0;
+      }
+      """;
 
   @Test
   void denyCarveOutInsideBroaderAllowActuallyDeniesTheRead(@TempDir Path tempDirParameter) throws IOException {
@@ -404,6 +467,203 @@ class SeatbeltProfileGeneratorEnforcementTest {
     }
   }
 
+  @Test
+  void bootstrapGrantsTheTerminalIoctlsRawModeNeeds(@TempDir Path tempDirParameter) throws IOException {
+    Path tempDir = tempDirParameter.toRealPath();
+    Path probe = compiledTerminalProbe(tempDir);
+    List<FilesystemRule> rules = List.of(allowRule(RulePath.tree(tempDir)));
+
+    SandboxExecResult result = runSandboxedOnTerminal(tempDir, rules, probe.toString());
+
+    assertThat(result.output())
+        .as("a terminal UI cannot start without this, which is the whole of the gap: %s", result.output())
+        .contains("rawMode=granted");
+    assertThat(result.output())
+        .as("and stty needs the line discipline the same grant carries: %s", result.output())
+        .contains("lineDiscipline=granted");
+  }
+
+  @Test
+  void keystrokeInjectionNeedsOneMoreOperationThisGeneratorCannotEmit(
+      @TempDir Path tempDirParameter
+  ) throws IOException {
+    Path tempDir = tempDirParameter.toRealPath();
+    Path probe = compiledTerminalProbe(tempDir);
+    List<FilesystemRule> rules = List.of(allowRule(RulePath.tree(tempDir)));
+
+    SandboxExecResult emitted = runSandboxedOnTerminal(tempDir, rules, probe.toString());
+    SandboxExecResult secondOperationOpened = runSandboxedOnTerminalWithExtraClauses(
+        tempDir, rules, "(allow hid-control)\n", probe.toString()
+    );
+
+    assertThat(emitted.output())
+        .as("the profile as emitted must refuse the injection: %s", emitted.output())
+        .contains("keystrokeInjection=refused");
+    assertThat(secondOperationOpened.output())
+        .as("and the refusal above must be hid-control's doing, or it asserts nothing: %s",
+            secondOperationOpened.output())
+        .contains("keystrokeInjection=granted");
+  }
+
+  @Test
+  void terminalIoctlGrantDecidesAnInheritedDescriptorTheOtherClausesNeverSee(
+      @TempDir Path tempDirParameter
+  ) throws IOException {
+    Path tempDir = tempDirParameter.toRealPath();
+    Path probe = compiledDescriptorIoctlProbe(tempDir);
+    Path ungranted = Files.writeString(tempDir.resolve("inherited.txt"), "PAYLOAD");
+    List<FilesystemRule> rules = List.of(allowRule(RulePath.literal(probe.toString())));
+
+    SandboxExecResult scoped = runSandboxedWithInheritedDescriptor(tempDir, rules, "", probe, ungranted);
+    SandboxExecResult unscoped = runSandboxedWithInheritedDescriptor(
+        tempDir, rules, "(allow file-ioctl)\n", probe, ungranted
+    );
+
+    assertThat(scoped.output())
+        .as("the sandbox refuses the ioctl on a path no clause of this profile names: %s", scoped.output())
+        .contains("inherited=EPERM");
+    assertThat(unscoped.output())
+        .as("and without the scoping the kernel answers instead, which is the unsandboxed"
+            + " outcome: %s", unscoped.output())
+        .doesNotContain("inherited=EPERM");
+  }
+
+  @Test
+  void bootstrapResolvesTheTerminalByNameWithoutOpeningAnythingUnderTheDeviceDirectory(
+      @TempDir Path tempDirParameter
+  ) throws IOException {
+    Path tempDir = tempDirParameter.toRealPath();
+    Path probe = compiledTerminalProbe(tempDir);
+    List<FilesystemRule> rules = List.of(
+        allowRule(RulePath.tree(tempDir)),
+        allowRule(RulePath.literal(LIST_EXECUTABLE)),
+        allowRule(RulePath.literal(BYTE_COUNT_EXECUTABLE))
+    );
+
+    SandboxExecResult named = runSandboxedOnTerminal(tempDir, rules, probe.toString());
+    SandboxExecResult listed = runSandboxed(tempDir, rules, LIST_EXECUTABLE, DEVICE_DIRECTORY);
+    SandboxExecResult worldReadableDevice = runSandboxed(
+        tempDir, rules, BYTE_COUNT_EXECUTABLE, "-c", WORLD_READABLE_DEVICE
+    );
+
+    assertThat(named.output())
+        .as("ttyname scans the device directory and matches by device number, so without its"
+            + " entries a payload resolving its own terminal gets nothing: %s", named.output())
+        .contains("terminalName=/dev/tty");
+    assertThat(listed.exitCode())
+        .as("the entries are granted to a readdir and not to a stat, so the listing stays refused: %s", listed.output())
+        .isNotZero();
+    assertThat(worldReadableDevice.exitCode())
+        .as("a subtree grant here would hand over every device node this user's own permissions"
+            + " already allow, and %s is one that opens under it: %s",
+            WORLD_READABLE_DEVICE, worldReadableDevice.output())
+        .isNotZero();
+    assertThat(worldReadableDevice.output())
+        .as("and the refusal has to be this profile's rather than the filesystem's, or the"
+            + " assertion above holds for a reason that has nothing to do with the grant: %s",
+            worldReadableDevice.output())
+        .contains("Operation not permitted");
+    assertThat(named.output())
+        .as("resolving the name is all the slave device is granted for. Reading it by that name is"
+            + " a second thing, and the regex covers every pty on the machine: %s", named.output())
+        .contains("terminalReopen=refused");
+  }
+
+  @Test
+  void bootstrapDiscardsOutputRedirectedToTheNullDeviceWithoutMakingOtherDevicesWritable(
+      @TempDir Path tempDirParameter
+  ) throws IOException {
+    Path tempDir = tempDirParameter.toRealPath();
+    List<FilesystemRule> rules = List.of(allowRule(RulePath.literal(SHELL_EXECUTABLE)));
+
+    SandboxExecResult discarded = runSandboxed(
+        tempDir, rules, SHELL_EXECUTABLE, "-c", "echo SWALLOWED > /dev/null && echo REDIRECT-DONE"
+    );
+    SandboxExecResult diagnostics = runSandboxed(
+        tempDir, rules, SHELL_EXECUTABLE, "-c", "ls /no-such-path-here 2>/dev/null; echo DIAGNOSTICS-DONE"
+    );
+    SandboxExecResult otherDevice = runSandboxed(tempDir, rules, SHELL_EXECUTABLE, "-c", "echo x > /dev/zero");
+
+    assertThat(discarded.output())
+        .as("a redirect that cannot open its sink stops the command it is attached to: %s", discarded.output())
+        .contains("REDIRECT-DONE");
+    assertThat(discarded.output())
+        .as("and what it swallowed must not surface anywhere else: %s", discarded.output())
+        .doesNotContain("SWALLOWED");
+    assertThat(diagnostics.output())
+        .as("2>/dev/null is the same grant and the more common spelling: %s", diagnostics.output())
+        .contains("DIAGNOSTICS-DONE");
+    assertThat(diagnostics.output())
+        .as("with the sink refused the diagnostics it was meant to swallow reach the terminal instead: %s",
+            diagnostics.output())
+        .doesNotContain("No such file or directory");
+    assertThat(otherDevice.exitCode())
+        .as("the write half belongs to the discard sink alone, not to every device beside it: %s",
+            otherDevice.output())
+        .isNotZero();
+  }
+
+  @Test
+  void bootstrapReachesTheTrustStoreThroughTheEtcSymlinkAndNothingElseUnderIt(
+      @TempDir Path tempDirParameter
+  ) throws IOException {
+    Path tempDir = tempDirParameter.toRealPath();
+    List<FilesystemRule> rules = List.of(
+        allowCatExecutable(),
+        allowRule(RulePath.literal(LIST_EXECUTABLE)),
+        allowRule(RulePath.literal(BYTE_COUNT_EXECUTABLE))
+    );
+
+    SandboxExecResult certificates = runSandboxed(tempDir, rules, BYTE_COUNT_EXECUTABLE, "-c", SYMLINKED_TLS_ROOT_STORE);
+    SandboxExecResult accounts = runSandboxed(tempDir, rules, CAT_EXECUTABLE, "/etc/passwd");
+    SandboxExecResult daemonConfiguration = runSandboxed(tempDir, rules, CAT_EXECUTABLE, "/etc/ssh/sshd_config");
+    SandboxExecResult listed = runSandboxed(tempDir, rules, LIST_EXECUTABLE, "/etc/");
+
+    assertThat(certificates.exitCode())
+        .as("/etc/ssl is the path every TLS client compiles in, so the trust store this bootstrap"
+            + " grants was reachable only by a spelling nothing uses: %s", certificates.output())
+        .isZero();
+    assertThat(accounts.exitCode())
+        .as("a symlink entry grants what it names and not what it points at: %s", accounts.output())
+        .isNotZero();
+    assertThat(daemonConfiguration.exitCode())
+        .as("nor the configuration of the machine's own daemons, through this spelling either: %s",
+            daemonConfiguration.output())
+        .isNotZero();
+    assertThat(listed.exitCode())
+        .as("nor the names of what is there: %s", listed.output())
+        .isNotZero();
+  }
+
+  @Test
+  void grantingTheSymlinkEntryDoesNotReachWhatItPointsAt(@TempDir Path tempDirParameter) throws IOException {
+    Path tempDir = tempDirParameter.toRealPath();
+    Path behind = Files.createDirectory(tempDir.resolve("behind"));
+    Files.writeString(behind.resolve("target.txt"), "TOP-SECRET");
+    Path link = tempDir.resolve("link.txt");
+    Files.createSymbolicLink(link, behind.resolve("target.txt"));
+    List<FilesystemRule> throughTheEntry = List.of(
+        allowRule(RulePath.literal(BYTE_COUNT_EXECUTABLE)),
+        allowRule(RulePath.literal(link.toString())),
+        denyRule(RulePath.tree(behind)),
+        allowRule(RulePath.tree(tempDir))
+    );
+    List<FilesystemRule> throughTheTarget = List.of(
+        allowRule(RulePath.literal(BYTE_COUNT_EXECUTABLE)),
+        allowRule(RulePath.tree(tempDir))
+    );
+
+    SandboxExecResult named = runSandboxed(tempDir, throughTheEntry, BYTE_COUNT_EXECUTABLE, "-c", link.toString());
+    SandboxExecResult control = runSandboxed(tempDir, throughTheTarget, BYTE_COUNT_EXECUTABLE, "-c", link.toString());
+
+    assertThat(named.exitCode())
+        .as("the kernel matches the resolved path, so granting the entry grants nothing: %s", named.output())
+        .isNotZero();
+    assertThat(control.exitCode())
+        .as("positive control: the same read goes through once the target itself is granted: %s", control.output())
+        .isZero();
+  }
+
   private static Path payloadDirectory(Path parent, String name) throws IOException {
     Path directory = Files.createDirectories(parent.resolve(name));
     Files.writeString(directory.resolve("f"), "PAYLOAD");
@@ -414,6 +674,28 @@ class SeatbeltProfileGeneratorEnforcementTest {
     Path file = parent.resolve(name);
     Files.writeString(file, "PAYLOAD");
     return file;
+  }
+
+  private static Path compiledDescriptorIoctlProbe(Path directory) throws IOException {
+    return compiledProbe(directory, "descriptor-ioctl-probe", DESCRIPTOR_IOCTL_PROBE_SOURCE);
+  }
+
+  private static Path compiledTerminalProbe(Path directory) throws IOException {
+    return compiledProbe(directory, "terminal-probe", TERMINAL_PROBE_SOURCE);
+  }
+
+  private static Path compiledProbe(Path directory, String name, String source) throws IOException {
+    Path sourcePath = directory.resolve(name + ".c");
+    Files.writeString(sourcePath, source);
+    Path binary = directory.resolve(name);
+    SandboxExecResult compilation = TestProcesses.run(
+        List.of("cc", "-o", binary.toString(), sourcePath.toString())
+    );
+    assumeTrue(
+        compilation.exitCode() == 0,
+        "a C compiler is required to build " + name + ": " + compilation.output()
+    );
+    return binary;
   }
 
   private static Path compiledNativeBinary(Path directory) throws IOException {
@@ -443,14 +725,67 @@ class SeatbeltProfileGeneratorEnforcementTest {
     return new FilesystemRule(target, kinds, decision, "test reason");
   }
 
+  private static SandboxExecResult runSandboxedOnTerminal(
+      Path tempDir,
+      List<FilesystemRule> rules,
+      String... command
+  ) throws IOException {
+    return runSandboxedOnTerminalWithExtraClauses(tempDir, rules, "", command);
+  }
+
+  private static SandboxExecResult runSandboxedOnTerminalWithExtraClauses(
+      Path tempDir,
+      List<FilesystemRule> rules,
+      String extraClauses,
+      String... command
+  ) throws IOException {
+    Path profilePath = writtenProfile(tempDir, rules, extraClauses);
+    List<String> fullCommand = new ArrayList<>();
+    fullCommand.add("/usr/bin/sandbox-exec");
+    fullCommand.add("-f");
+    fullCommand.add(profilePath.toString());
+    fullCommand.addAll(List.of(command));
+    return PseudoTerminal.run(tempDir, fullCommand);
+  }
+
+  private static SandboxExecResult runSandboxedWithInheritedDescriptor(
+      Path tempDir,
+      List<FilesystemRule> rules,
+      String extraClauses,
+      Path command,
+      Path inherited
+  ) throws IOException {
+    Path profilePath = writtenProfile(tempDir, rules, extraClauses);
+    Process process = new ProcessBuilder(
+        "/usr/bin/sandbox-exec", "-f", profilePath.toString(), command.toString()
+    )
+        .redirectInput(inherited.toFile())
+        .redirectErrorStream(true)
+        .start();
+    return drained(process);
+  }
+
+  private static Path writtenProfile(Path tempDir, List<FilesystemRule> rules) throws IOException {
+    return writtenProfile(tempDir, rules, "");
+  }
+
+  private static Path writtenProfile(
+      Path tempDir,
+      List<FilesystemRule> rules,
+      String extraClauses
+  ) throws IOException {
+    String profile = SeatbeltProfileGenerator.generate(rules, PROXY_PORT, Optional.empty());
+    Path profilePath = tempDir.resolve("profile-" + UUID.randomUUID() + ".sb");
+    Files.writeString(profilePath, profile + extraClauses);
+    return profilePath;
+  }
+
   private static SandboxExecResult runSandboxed(
       Path tempDir,
       List<FilesystemRule> rules,
       String... command
   ) throws IOException {
-    String profile = SeatbeltProfileGenerator.generate(rules, PROXY_PORT, Optional.empty());
-    Path profilePath = tempDir.resolve("profile-" + UUID.randomUUID() + ".sb");
-    Files.writeString(profilePath, profile);
+    Path profilePath = writtenProfile(tempDir, rules);
     List<String> fullCommand = new ArrayList<>();
     fullCommand.add("/usr/bin/sandbox-exec");
     fullCommand.add("-f");
@@ -459,9 +794,10 @@ class SeatbeltProfileGeneratorEnforcementTest {
     Process process = new ProcessBuilder(fullCommand)
         .redirectErrorStream(true)
         .start();
-    // Wait for exit BEFORE reading stdout: readAllBytes() blocks until EOF, which is only
-    // guaranteed once the process is gone, so reading first would leave a hung sandbox-exec with
-    // no way to time out or be force-killed at all.
+    return drained(process);
+  }
+
+  private static SandboxExecResult drained(Process process) throws IOException {
     boolean finished = awaitTermination(process);
     if (!finished) {
       process.destroyForcibly();

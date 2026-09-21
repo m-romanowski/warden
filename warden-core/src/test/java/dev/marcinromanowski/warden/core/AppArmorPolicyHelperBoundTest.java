@@ -21,6 +21,8 @@ class AppArmorPolicyHelperBoundTest {
 
   private static final String VENDOR_PROFILE = "/usr/bin/man";
   private static final String WELL_FORMED_BODY = "  #include <abstractions/base>\n  /** r,\n";
+  private static final String TRUST_STORE_BODY =
+      "  #include <abstractions/base>\n  #include <abstractions/ssl_certs>\n  /** r,\n";
 
   @Test
   void loadsAndRemovesExactlyTheThreeProfilesTheSessionIdNames() throws IOException {
@@ -82,17 +84,22 @@ class AppArmorPolicyHelperBoundTest {
   }
 
   @Test
-  void refusesAnAbstractionOtherThanTheOneWardenEmits() throws IOException {
+  void refusesAnAbstractionOtherThanTheOnesWardenEmits() throws IOException {
     String sessionId = newSessionId();
 
     SandboxExecResult refused = helper("load", sessionId, "  include <abstractions/snap_browsers>\n  /** r,\n");
     SandboxExecResult permitted = helper("load", sessionId, WELL_FORMED_BODY);
+    SandboxExecResult trustStore = helper("load", sessionId, TRUST_STORE_BODY);
 
     assertThat(refused.exitCode())
         .as("an abstraction this project does not emit may declare profiles of its own: %s", refused.output())
         .isNotZero();
     assertThat(permitted.exitCode())
-        .as("positive control: the one abstraction warden does emit still loads: %s", permitted.output())
+        .as("positive control: the abstraction every generated body opens with still loads: %s", permitted.output())
+        .isZero();
+    assertThat(trustStore.exitCode())
+        .as("and the one the generator started emitting with it, which this list once refused and"
+            + " so refused every Linux launch there was: %s", trustStore.output())
         .isZero();
     helper("unload", sessionId, "");
   }

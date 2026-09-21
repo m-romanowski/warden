@@ -32,6 +32,36 @@ class AppArmorSessionPolicyInstallCheckTest {
   }
 
   @Test
+  void acceptsTheInstalledHelperThisReleaseGeneratesPolicyFor() {
+    assertThat(AppArmorSessionPolicy.contractMismatch(AppArmorSessionPolicy.POLICY_HELPER))
+        .as("positive control: the helper on this machine has to be one this release's generated"
+            + " body still loads, which ownership and permissions say nothing about")
+        .isEmpty();
+  }
+
+  @Test
+  void refusesTheHelperAnOlderReleaseInstalled(@TempDir Path tempDir) throws IOException {
+    Path helper = Files.writeString(tempDir.resolve("helper"), "#!/bin/sh\n# no contract line\n");
+
+    assertThat(AppArmorSessionPolicy.contractMismatch(helper))
+        .hasValueSatisfying(problem -> assertThat(problem)
+            .contains("predates the contract")
+        );
+  }
+
+  @Test
+  void refusesTheHelperDeclaringSomeOtherContractThanThisRelease(@TempDir Path tempDir) throws IOException {
+    Path helper = Files.writeString(
+        tempDir.resolve("helper"), "#!/bin/sh\n# warden-policy-helper-contract: 99\n"
+    );
+
+    assertThat(AppArmorSessionPolicy.contractMismatch(helper))
+        .hasValueSatisfying(problem -> assertThat(problem)
+            .contains("declares contract 99")
+        );
+  }
+
+  @Test
   void refusesTheRootOwnedHelperAnyoneElseCanWrite() {
     assertThat(AppArmorSessionPolicy.rootOwnedAndOnlyRootWritable(Path.of("/tmp")))
         .as("/tmp is root-owned and mode 1777, which is the second half of the check")

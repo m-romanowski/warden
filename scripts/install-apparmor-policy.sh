@@ -39,8 +39,17 @@ trap 'rm -f "$STAGED_HELPER" "${STAGED_SUDOERS:-}"' EXIT INT TERM
 
 cat > "$STAGED_HELPER" <<HELPER
 #!/bin/sh
+# warden-policy-helper-contract: 2
+#
 # Installed by warden's install-apparmor-policy.sh. Root-owned, and the single command warden's
 # daemon user may run as root.
+#
+# The contract line above is what the library checks before it launches anything, because the
+# helper on disk is a copy taken at install time and nothing else about it says which release wrote
+# it. Bump it whenever a change here makes an older helper refuse a body this release now emits,
+# and add the new number to POLICY_HELPER_CONTRACTS in AppArmorSessionPolicy. Contract 2 is the
+# include allowlist admitting <abstractions/ssl_certs>: a machine still running contract 1 refuses
+# every session launch of this release, with this script's own wording as the only clue.
 #
 # It accepts no path and no policy text that could name a profile. The one argument is a session id,
 # and every profile header - names, flags and the bwrap attachment - is written here. What the
@@ -125,10 +134,16 @@ write_policy() {
   if LC_ALL=C grep -q '[{}]' "\$BODY_FILE"; then
     refuse "session profile body must contain no brace"
   fi
-  # One abstraction by name, not a pattern over a directory this script does not own. An abstraction
+  # Each abstraction by name, not a pattern over a directory this script does not own. An abstraction
   # can declare a profile of its own, braces and all, so an allowlist shaped like "abstractions/*"
-  # hands the body a way to bring in both without writing either. Naming the single file warden emits
+  # hands the body a way to bring in both without writing either. Naming the exact files warden emits
   # is what makes the no-brace invariant above true rather than merely usually true.
+  #
+  # ssl_certs is the second, and it is here because the generator started emitting it and this list
+  # did not follow: measured against a real kernel, every session launch on Linux was refused at this
+  # line, and warden's own AppArmor enforcement suite failed thirty cases with this refusal as the
+  # message. Naming a second file costs the allowlist nothing that naming one did not already cost,
+  # because the bound on what either file may itself declare is the -N check below and not the count.
   #
   # Which abstractions those are belongs to the distribution, and this project has measured one:
   # asked file by file, apparmor_parser -N names seven of the ones Ubuntu 26.04 ships, and the
@@ -144,8 +159,8 @@ write_policy() {
   # include after a rule on the same line, measured.
   if LC_ALL=C grep -oE '(^|[[:space:]]|#)include.*' "\$BODY_FILE" \\
       | LC_ALL=C sed -E 's/^[[:space:]#]+//' \\
-      | LC_ALL=C grep -qvE '^include[[:space:]]*<abstractions/base>[[:space:]]*\$'; then
-    refuse "session profile body may include nothing but <abstractions/base>"
+      | LC_ALL=C grep -qvE '^include[[:space:]]*<abstractions/(base|ssl_certs)>[[:space:]]*\$'; then
+    refuse "session profile body may include nothing but <abstractions/base> and <abstractions/ssl_certs>"
   fi
 
   {

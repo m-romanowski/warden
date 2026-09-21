@@ -24,10 +24,10 @@ final class SeatbeltProfileGenerator {
   private static final String PROFILE_HEADER = "(version 1)\n(deny default)\n";
   // (literal "/") carries file-read-data and not file-read*, which is the narrowest grant any
   // process starts under at all: with metadata alone every launch aborts before reaching main,
-  // and with neither nothing runs. Listing the root needs both operations, so withholding the
-  // metadata half is what keeps "ls /" refused. A caller granting EXTERNAL_DIRECTORY on "/"
-  // supplies the other half itself and gets the listing back - that is the caller's rule, not
-  // this bootstrap's.
+  // and with neither nothing runs. Withholding the metadata half is what keeps "ls /" refused -
+  // ls stats the directory before it reads it - though a readdir of the entry names does go
+  // through, measured. A caller granting EXTERNAL_DIRECTORY on "/" supplies the other half itself
+  // and gets the listing back - that is the caller's rule, not this bootstrap's.
   //
   // (literal "/var") / (literal "/tmp") grant read-metadata on the symlink *entries* themselves
   // (not recursively into whatever they point at) - without this, a sandboxed process that
@@ -44,27 +44,97 @@ final class SeatbeltProfileGenerator {
   // /private/etc is named entry by entry rather than as a subtree. A subtree grant is a blanket read
   // of the machine's system configuration handed to every consumer of this library, and it was one:
   // measured, /private/etc/passwd and /private/etc/ssh/sshd_config both returned their contents and
-  // /private/etc listed. What is here instead is the TLS root store and the resolver, service and
-  // timezone tables a networked payload consults through libc - files that carry no secret and that
+  // /private/etc listed. What is here instead is the TLS root store and the hosts, service,
+  // protocol and timezone tables a payload consults through libc - files that carry no secret and that
   // nothing else in this bootstrap supplies. The discriminating measurement is TLS: with the whole
   // subtree removed an https request fails at "error setting certificate verify locations", and with
   // these entries it succeeds, while every disclosure above stays refused. See
   // SeatbeltProfileGeneratorEnforcementTest.
   //
-  // Reaching any of them through the "/etc" symlink needs that entry granted too, which is a caller's
-  // rule and not this bootstrap's - the same division as "/var" and "/tmp" above, except that those
-  // two are named here because a process constructs them from its own environment.
+  // (literal "/etc") is granted for the same reason "/var" and "/tmp" are, and the division that
+  // once left it to the caller does not survive the bootstrap granting the trust store itself.
+  // /etc/ssl is not a path a payload chooses, it is the path OpenSSL, curl and every TLS client
+  // that inherits their default compile in, so the entry the bootstrap grants was reachable only
+  // by a spelling nothing uses. Measured: "wc -c /etc/ssl/cert.pem" refused without this entry and
+  // 333483 bytes with it, while /etc/passwd, /etc/ssh/sshd_config and /etc/master.passwd stay
+  // refused through both spellings, "ls /etc/" and "ls /private/etc" stay refused, and a write
+  // under /etc stays refused. A symlink entry grants what it names and not what it points at.
+  //
+  // /private/etc/resolv.conf is NOT here, and was removed rather than repointed. It is itself a
+  // symlink to /private/var/run/resolv.conf, and Seatbelt matches a resolved path, so the entry
+  // granted a target no open ever reached - measured, "cat /private/etc/resolv.conf" was refused
+  // with the grant in place. Repointing it at the real file would have made it readable and bought
+  // nothing: a resolver table is only useful to a process that can send a DNS query, and
+  // (deny network*) below refuses that, measured as getaddrinfo failing EAI_NONAME inside the
+  // sandbox whether or not the table is granted. What it would have cost is the machine's
+  // nameserver addresses and search domains.
+  //
+  // (literal "/dev") carries file-read-data for the same reason "/" does, one step further: a
+  // payload that resolves its own terminal by name needs the /dev directory's entries, because
+  // ttyname(3) scans them and matches by device number. Withholding the metadata half keeps
+  // "ls /dev" refused, so what this discloses is device names to a readdir and nothing else.
+  //
+  // The entry and not the subtree, and the reason is not the raw disk: /dev/disk0 and /dev/rdisk0
+  // are root:operator 0640, so an ordinary payload is refused them identically under a wide-open
+  // profile and unsandboxed, and naming them as what a subtree grant buys would be wrong. What a
+  // subtree grant actually buys is every device node this user's own file permissions already
+  // allow, which the sandbox is otherwise the second gate on: measured, /dev/autofs_nowait (0666)
+  // opens under (subpath "/dev") and is refused under this entry, while /dev/pf and /dev/klog move
+  // from the sandbox's EPERM to the filesystem's EACCES - two gates down to one, on a set the
+  // distribution decides and this library does not.
+  //
+  // /dev/null is read AND write. Granted read alone, "> /dev/null" and "2>/dev/null" fail with
+  // EPERM, which breaks ordinary shell tooling rather than exotic tooling. The write half of a
+  // discard sink discloses nothing and destroys nothing. /dev/zero deliberately keeps read alone,
+  // and a write to it stays refused.
+  //
+  // file-ioctl is what lets a terminal UI exist on this platform at all. (deny default) covers it,
+  // and the effect is not that every terminal operation fails: measured under a real pseudoterminal,
+  // tcgetattr and TIOCGWINSZ already succeed without it, while tcsetattr fails EPERM - so a payload
+  // reads the terminal state it may not change, which is exactly "setRawMode failed with errno: 1"
+  // and a TUI that cannot start. The grant names terminal devices and nothing else, never
+  // file-ioctl on its own.
+  //
+  // What that scoping is worth is measurable, and it is not that an unscoped grant reaches no path
+  // the read and write clauses already gate. An inherited descriptor is not gated by them at all:
+  // measured, DKIOCGETBLOCKSIZE on a descriptor this profile's caller never granted a path for
+  // fails EPERM under the clause as written and ENOTTY - the unsandboxed answer - under
+  // "(allow file-ioctl)", and the same pair on /dev/urandom reads EPERM against ENOTSUP. The scope
+  // is the only thing deciding those, so it is load-bearing rather than defence in depth.
+  //
+  // What the grant costs is the sharper question, because an ioctl on a terminal is how a process
+  // types into someone else's shell. TIOCSTI needs TWO operations, bisected against a real sandbox:
+  // file-ioctl and hid-control. This grant opens the file-ioctl half - measured, the injection
+  // succeeds once "(allow hid-control)" is appended to a profile this generator emits, and is
+  // refused once either operation is denied under "(allow default)". So before this clause two
+  // gates were shut and after it one is, and what holds is hid-control. No caller reaches that: a
+  // FilesystemRule only ever becomes a file-read*, file-read-metadata, file-write* or process-exec
+  // clause, and a reason carrying a line break is refused, so there is no input to this generator
+  // that emits hid-control. That invariant is the protection, and it is asserted where it can
+  // actually fail - see SeatbeltProfileGeneratorTest.
+  //
+  // /dev/ptmx is deliberately absent from the ioctl clause. It would grant grantpt and unlockpt,
+  // and both dead-end: the slave they prepare cannot be opened, because the pty slave regex below
+  // grants metadata and write and not read (measured, open(ptsname(m), O_RDWR) fails EPERM). A
+  // payload does not drive a child through a pseudoterminal of its own here, it inherits one, and
+  // dropping the filter changes nothing about raw mode, stty or ttyname - all three measured.
+  //
+  // The pty slave regex carries file-read-metadata and not file-read*. Reading a terminal a payload
+  // already holds a descriptor for never needed a path grant at all (measured: read(0) returns the
+  // byte under the pre-existing profile), and metadata is the half ttyname(3) needs to match a
+  // scanned /dev entry against fstat of the descriptor.
   private static final String BOOTSTRAP_ALLOWANCES =
       """
-      (allow file-read-data (literal "/"))
-      (allow file-read* (literal "/var") (literal "/tmp") (subpath "/bin") \
+      (allow file-read-data (literal "/") (literal "/dev"))
+      (allow file-read* (literal "/var") (literal "/tmp") (literal "/etc") (subpath "/bin") \
       (subpath "/usr/bin") (subpath "/usr/lib") \
       (subpath "/usr/share") (subpath "/System/Library") (subpath "/private/var/db/dyld") \
-      (subpath "/private/etc/ssl") (literal "/private/etc/hosts") (literal "/private/etc/resolv.conf") \
+      (subpath "/private/etc/ssl") (literal "/private/etc/hosts") \
       (literal "/private/etc/localtime") (literal "/private/etc/services") (literal "/private/etc/protocols") \
-      (literal "/dev/null") (literal "/dev/zero") (literal "/dev/urandom") (literal "/dev/random"))
-      (allow file-read* file-write* (subpath "/dev/tty") (subpath "/dev/ptmx"))
-      (allow file-write* (regex #"^/dev/tty[a-z0-9]+$"))
+      (literal "/dev/zero") (literal "/dev/urandom") (literal "/dev/random"))
+      (allow file-read* file-write* (literal "/dev/null") (subpath "/dev/tty") (subpath "/dev/ptmx"))
+      (allow file-read-metadata file-write* (regex #"^/dev/tty[a-z0-9]+$"))
+      (allow file-ioctl (literal "/dev/tty") (regex #"^/dev/tty[a-z0-9]+$"))
       (allow process-fork)
       (allow process-exec)
       (allow signal (target self))

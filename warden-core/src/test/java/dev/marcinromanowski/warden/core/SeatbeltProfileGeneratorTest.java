@@ -7,9 +7,12 @@ import dev.marcinromanowski.warden.api.AccessKind;
 import dev.marcinromanowski.warden.api.Decision;
 import dev.marcinromanowski.warden.api.FilesystemRule;
 import dev.marcinromanowski.warden.api.RulePath;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import org.junit.jupiter.api.Test;
 
 // Actual OS enforcement (whether the generated profile really denies
@@ -21,6 +24,7 @@ class SeatbeltProfileGeneratorTest {
   private static final int PROXY_PORT = 18080;
   private static final String WORKSPACE_ROOT_PATTERN = "/workspace/**";
   private static final String FILE_READ_OPERATION = "file-read*";
+  private static final Pattern CLAUSE_OPERATIONS = Pattern.compile("\\((?:allow|deny) ([a-z0-9-*? ]+?)(?= \\(|\\)|$)", Pattern.MULTILINE);
 
   @Test
   void deniesEverythingByDefault() {
@@ -233,6 +237,41 @@ class SeatbeltProfileGeneratorTest {
 
     assertThatThrownBy(() -> generate(filesystemRules))
         .isInstanceOf(IllegalArgumentException.class);
+  }
+
+  @Test
+  void emitsNoKeystrokeInjectionOperationForAnyRuleTheCallerCanWrite() {
+    List<FilesystemRule> everyKindBothWays = new ArrayList<>();
+    for (AccessKind kind : AccessKind.values()) {
+      for (Decision decision : Decision.values()) {
+        everyKindBothWays.add(rule(Set.of(kind), RulePath.glob(WORKSPACE_ROOT_PATTERN), decision));
+      }
+    }
+
+    String profile = generate(everyKindBothWays);
+
+    assertThat(operationsIn(profile))
+        .as("the vocabulary is closed, and hid-control is the one outside it that matters: %s", profile)
+        .isSubsetOf(
+            "file-read-data", FILE_READ_OPERATION, "file-read-metadata", "file-write*", "file-ioctl",
+            "process-exec", "process-fork", "signal", "sysctl-read", "mach-lookup", "iokit-open",
+            "network*", "network-outbound", "network-bind", "network-inbound", "default"
+        );
+  }
+
+  private static List<String> operationsIn(String profile) {
+    List<String> operations = new ArrayList<>();
+    Matcher matcher = CLAUSE_OPERATIONS.matcher(profile);
+    while (matcher.find()) {
+      operations.addAll(
+          List.of(
+              matcher.group(1)
+                  .trim()
+                  .split("\\s+")
+          )
+      );
+    }
+    return operations;
   }
 
   private static String generate(List<FilesystemRule> rules) {
