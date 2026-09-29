@@ -1,6 +1,7 @@
 package dev.marcinromanowski.warden.core;
 
 import dev.marcinromanowski.warden.api.SandboxEstablishmentException;
+import dev.marcinromanowski.warden.api.SandboxTimeouts;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -18,11 +19,11 @@ final class BwrapSessionStore {
   private BwrapSessionStore() {
   }
 
-  static BwrapSession open(String sessionId, Consumer<String> diagnostics) {
+  static BwrapSession open(String sessionId, Consumer<String> diagnostics, SandboxTimeouts timeouts) {
     sweepOnce(diagnostics);
     Path root = SESSIONS_DIRECTORY.resolve(sessionId);
     BwrapSessionLock lock = acquireLock(root);
-    BwrapSession session = new BwrapSession(root, lock);
+    BwrapSession session = new BwrapSession(root, lock, timeouts);
     try {
       Files.createDirectory(root);
       Files.createDirectory(session.sessionDirectory());
@@ -77,7 +78,7 @@ final class BwrapSessionStore {
     if (held.isEmpty()) {
       return;
     }
-    BwrapSession session = new BwrapSession(root, held.get());
+    BwrapSession session = new BwrapSession(root, held.get(), SandboxTimeouts.defaults());
     try {
       session.close();
       diagnostics.accept("reclaimed abandoned sandbox session " + root.getFileName());

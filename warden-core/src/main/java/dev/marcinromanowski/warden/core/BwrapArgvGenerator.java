@@ -18,7 +18,7 @@ import java.util.List;
 final class BwrapArgvGenerator {
 
   private static final List<String> BOOTSTRAP_READ_ONLY_PATHS =
-      List.of("/bin", "/usr/bin", "/usr/lib", "/usr/share", "/lib", "/lib64", "/etc");
+      List.of("/bin", "/usr/bin", "/usr/lib", "/usr/share", "/lib", "/lib64", "/usr/lib64", "/etc");
   private static final List<Path> RESERVED_PATHS = reservedPaths();
 
   private BwrapArgvGenerator() {

@@ -2,6 +2,7 @@ package dev.marcinromanowski.warden.core;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import dev.marcinromanowski.warden.api.SandboxTimeouts;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.Socket;
@@ -52,7 +53,7 @@ class ControlPlaneRelayLatencyBenchmarkTest {
         "warden-benchmark-uds-server", this::acceptAndEchoLoop
     );
     udsServerThread.start();
-    relay = ControlPlaneRelay.start(udsPath, _ -> {});
+    relay = ControlPlaneRelay.start(udsPath, _ -> {}, SandboxTimeouts.DEFAULT_CONTROL_PLANE_RELAY_DRAIN);
   }
 
   @AfterEach

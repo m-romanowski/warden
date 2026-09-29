@@ -22,6 +22,7 @@ public final class SandboxLaunchRequestBuilder {
   private Path sandboxRootPath;
   private URI controlPlaneHintUri;
   private NetworkAskHandler askHandler;
+  private SandboxTimeouts sandboxTimeouts = SandboxTimeouts.defaults();
 
   SandboxLaunchRequestBuilder(List<String> command) {
     this.command = List.copyOf(Preconditions.nonNull(command, "command"));
@@ -63,6 +64,12 @@ public final class SandboxLaunchRequestBuilder {
   /** Sets a hint URI for a control-plane endpoint the child process exposes. */
   public SandboxLaunchRequestBuilder controlPlaneHint(URI uri) {
     this.controlPlaneHintUri = Preconditions.nonNull(uri, "uri");
+    return this;
+  }
+
+  /** Overrides the wait bounds this launch uses. Defaults to {@link SandboxTimeouts#defaults()}. */
+  public SandboxLaunchRequestBuilder timeouts(SandboxTimeouts sandboxTimeouts) {
+    this.sandboxTimeouts = Preconditions.nonNull(sandboxTimeouts, "sandboxTimeouts");
     return this;
   }
 
@@ -151,7 +158,8 @@ public final class SandboxLaunchRequestBuilder {
         sandboxRootPath,
         pathMounts,
         Optional.ofNullable(controlPlaneHintUri),
-        Optional.ofNullable(askHandler)
+        Optional.ofNullable(askHandler),
+        sandboxTimeouts
     );
   }
 }

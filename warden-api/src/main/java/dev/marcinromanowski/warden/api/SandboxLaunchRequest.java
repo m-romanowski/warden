@@ -29,6 +29,7 @@ import java.util.Set;
  * @param controlPlaneHint a hint URI for a control-plane endpoint the child process exposes, if
  *     any - see {@link SandboxedProcess#controlPlaneUri()} for why the resolved URI can differ
  * @param networkAskHandler resolves an unmatched network-egress request live, if supplied
+ * @param timeouts how long the sandbox waits at each point where it can wait forever
  */
 public record SandboxLaunchRequest(
     List<String> command,
@@ -40,7 +41,8 @@ public record SandboxLaunchRequest(
     Path sandboxRoot,
     List<PathMount> pathMounts,
     Optional<URI> controlPlaneHint,
-    Optional<NetworkAskHandler> networkAskHandler
+    Optional<NetworkAskHandler> networkAskHandler,
+    SandboxTimeouts timeouts
 ) {
 
   /** Validates and normalizes the components above. */
@@ -59,6 +61,7 @@ public record SandboxLaunchRequest(
     pathMounts = validatedMounts(pathMounts, sandboxRoot);
     controlPlaneHint = Preconditions.nonNull(controlPlaneHint, "controlPlaneHint");
     networkAskHandler = Preconditions.nonNull(networkAskHandler, "networkAskHandler");
+    timeouts = Preconditions.nonNull(timeouts, "timeouts");
   }
 
   /** Returns a defensive copy of the environment variables. */

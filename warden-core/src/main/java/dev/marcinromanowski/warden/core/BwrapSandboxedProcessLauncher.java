@@ -3,6 +3,7 @@ package dev.marcinromanowski.warden.core;
 import dev.marcinromanowski.warden.api.PathMount;
 import dev.marcinromanowski.warden.api.SandboxEstablishmentException;
 import dev.marcinromanowski.warden.api.SandboxLaunchRequest;
+import dev.marcinromanowski.warden.api.SandboxTimeouts;
 import dev.marcinromanowski.warden.api.SandboxedProcess;
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -65,7 +66,7 @@ final class BwrapSandboxedProcessLauncher {
 
     AppArmorSessionPolicy.requireInstalled();
     AppArmorSessionProfileNames names = AppArmorSessionProfileNames.forNewSession();
-    BwrapSession session = BwrapSessionStore.open(names.sessionId(), diagnostics);
+    BwrapSession session = BwrapSessionStore.open(names.sessionId(), diagnostics, request.timeouts());
     Path sessionDirectory = session.sessionDirectory();
     Path uniqueTargetBinary;
     SandboxProxyServer proxy = null;
@@ -88,7 +89,8 @@ final class BwrapSandboxedProcessLauncher {
             request.filesystemRules(),
             names,
             new BwrapSessionPaths(sessionDirectory, controlPlanePort.isPresent()),
-            socatExecutable
+            socatExecutable,
+            request.timeouts()
         );
       } catch (PrivilegedOutcomeUnknownException e) {
         policyOutcomeUnknown = true;
@@ -97,7 +99,7 @@ final class BwrapSandboxedProcessLauncher {
 
       proxy = startProxy(request, sessionDirectory);
       controlPlaneRelay = controlPlanePort.isPresent()
-          ? Optional.of(startControlPlaneRelay(sessionDirectory))
+          ? Optional.of(startControlPlaneRelay(sessionDirectory, request.timeouts()))
           : Optional.empty();
 
       writeBridgeScript(sessionDirectory, socatExecutable, controlPlanePort);
@@ -201,10 +203,14 @@ final class BwrapSandboxedProcessLauncher {
         .filter(port -> port > 0);
   }
 
-  private ControlPlaneRelay startControlPlaneRelay(Path sessionDirectory) {
+  private ControlPlaneRelay startControlPlaneRelay(Path sessionDirectory, SandboxTimeouts timeouts) {
     Path controlSocketPath = sessionDirectory.resolve(CONTROL_SOCKET_FILE_NAME);
     try {
-      return ControlPlaneRelay.start(controlSocketPath, diagnostics);
+      return ControlPlaneRelay.start(
+          controlSocketPath,
+          diagnostics,
+          timeouts.controlPlaneRelayDrain()
+      );
     } catch (UncheckedIOException e) {
       throw new SandboxEstablishmentException("Failed to start sandbox control-plane relay", e);
     }

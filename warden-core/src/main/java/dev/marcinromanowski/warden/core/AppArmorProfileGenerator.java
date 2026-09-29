@@ -124,6 +124,7 @@ final class AppArmorProfileGenerator {
       /usr/lib/** mrix,
       /lib/** mrix,
       /lib64/** mrix,
+      /usr/lib64/** mrix,
       /usr/share/** r,
       """;
 

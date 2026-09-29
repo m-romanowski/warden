@@ -1,10 +1,12 @@
 package dev.marcinromanowski.warden.core;
 
+import dev.marcinromanowski.warden.api.SandboxTimeouts;
 import java.nio.file.Path;
 
 record BwrapSession(
     Path root,
-    BwrapSessionLock lock
+    BwrapSessionLock lock,
+    SandboxTimeouts timeouts
 ) implements AutoCloseable {
 
   private static final String SESSION_SUBDIRECTORY = "session";
@@ -20,8 +22,11 @@ record BwrapSession(
 
   @Override
   public void close() {
-    AppArmorSessionPolicy.unload(root.getFileName()
-        .toString());
+    AppArmorSessionPolicy.unload(
+        root.getFileName()
+            .toString(),
+        timeouts
+    );
     SandboxSessionDirectories.deleteQuietly(root);
     lock.close();
   }

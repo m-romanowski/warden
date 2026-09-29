@@ -93,7 +93,14 @@ public final class OsSandboxedProcessLauncher implements SandboxedProcessLaunche
       process = startProcess(request, profilePath, proxy.port());
       diagnostics.accept("sandboxed process started pid=" + process.pid());
       SandboxedProcess sandboxedProcess =
-          new OsSandboxedProcess(process, proxy, profilePath, request.controlPlaneHint(), diagnostics);
+          new OsSandboxedProcess(
+              process,
+              proxy,
+              profilePath,
+              request.controlPlaneHint(),
+              diagnostics,
+              request.timeouts()
+          );
       established = true;
       return sandboxedProcess;
     } finally {

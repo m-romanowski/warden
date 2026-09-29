@@ -1,5 +1,6 @@
 package dev.marcinromanowski.warden.core;
 
+import dev.marcinromanowski.warden.api.SandboxTimeouts;
 import dev.marcinromanowski.warden.api.SandboxedProcess;
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -27,21 +28,22 @@ import java.util.function.Consumer;
 // when destroyForcibly() runs the forceful pass a few seconds later.
 final class OsSandboxedProcess implements SandboxedProcess {
 
-  private static final Duration GRACEFUL_SHUTDOWN_TIMEOUT = Duration.ofSeconds(5);
-
   private final Process process;
   private final SandboxProxyServer proxy;
   private final Path profilePath;
   private final Optional<URI> resolvedControlPlaneUri;
   private final Optional<SandboxControlPlaneBindGuard> controlPlaneBindGuard;
+  private final SandboxTimeouts timeouts;
 
   OsSandboxedProcess(
       Process process,
       SandboxProxyServer proxy,
       Path profilePath,
       Optional<URI> controlPlaneUri,
-      Consumer<String> diagnostics
+      Consumer<String> diagnostics,
+      SandboxTimeouts timeouts
   ) {
+    this.timeouts = timeouts;
     this.process = process;
     this.proxy = proxy;
     this.profilePath = profilePath;
@@ -120,7 +122,7 @@ final class OsSandboxedProcess implements SandboxedProcess {
       return;
     }
     destroy();
-    if (waitFor(GRACEFUL_SHUTDOWN_TIMEOUT)) {
+    if (waitFor(timeouts.gracefulShutdown())) {
       return;
     }
     destroyForcibly();

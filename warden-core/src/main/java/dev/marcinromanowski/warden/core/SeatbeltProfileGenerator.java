@@ -29,12 +29,13 @@ final class SeatbeltProfileGenerator {
   // through, measured. A caller granting EXTERNAL_DIRECTORY on "/" supplies the other half itself
   // and gets the listing back - that is the caller's rule, not this bootstrap's.
   //
-  // (literal "/var") / (literal "/tmp") grant read-metadata on the symlink *entries* themselves
-  // (not recursively into whatever they point at) - without this, a sandboxed process that
-  // constructs a path via its own non-canonical "/var/..."/"/tmp/..." string (e.g. from $TMPDIR,
-  // which macOS sets to the non-canonical form) can't even resolve past the first path segment.
-  // Confirmed empirically: "mkdir: /var: Operation not permitted" via a real sandbox-exec run
-  // using a profile that only granted access to the equivalent /private/var/... canonical path.
+  // (literal "/var"), (literal "/tmp") and (literal "/etc") name the symlink *entries* at the root
+  // and not what they point at, and they carry file-read-metadata rather than file-read* because
+  // metadata is the whole of what resolving a symlink costs. Without them a sandboxed process that
+  // constructs a path from its own non-canonical "/var/...", "/tmp/..." or "/etc/..." string
+  // (e.g. from $TMPDIR, which macOS sets to the non-canonical form) can't resolve past the first
+  // path segment. Confirmed empirically: "mkdir: /var: Operation not permitted" via a real
+  // sandbox-exec run using a profile that only granted the equivalent /private/var/... path.
   //
   // (subpath "/bin") / (subpath "/usr/bin") grant read (and, combined with process-exec below,
   // execute) access to standard system binaries - this sandbox's security boundary is what a
@@ -51,14 +52,26 @@ final class SeatbeltProfileGenerator {
   // these entries it succeeds, while every disclosure above stays refused. See
   // SeatbeltProfileGeneratorEnforcementTest.
   //
-  // (literal "/etc") is granted for the same reason "/var" and "/tmp" are, and the division that
-  // once left it to the caller does not survive the bootstrap granting the trust store itself.
-  // /etc/ssl is not a path a payload chooses, it is the path OpenSSL, curl and every TLS client
-  // that inherits their default compile in, so the entry the bootstrap grants was reachable only
-  // by a spelling nothing uses. Measured: "wc -c /etc/ssl/cert.pem" refused without this entry and
-  // 333483 bytes with it, while /etc/passwd, /etc/ssh/sshd_config and /etc/master.passwd stay
-  // refused through both spellings, "ls /etc/" and "ls /private/etc" stay refused, and a write
-  // under /etc stays refused. A symlink entry grants what it names and not what it points at.
+  // "/etc" is in the symlink-entry clause above, and not left to the caller, because /etc/ssl is not
+  // a path a payload chooses, it is the CA bundle path a TLS client compiles in, and /usr/bin/curl
+  // names its own: without the entry a real https request dies at "error setting certificate verify
+  // locations: CAfile: /etc/ssl/cert.pem" with exit 77, before it opens a socket, and with it the
+  // same request completes a real handshake to a public host and returns 200. Both measured, as is the
+  // difference between the two operations: file-read-metadata carries lstat and readlink and is
+  // enough for that handshake, while the file-read* this entry used to sit under additionally
+  // granted open(O_SYMLINK), getxattr(XATTR_NOFOLLOW) and faccessat(AT_SYMLINK_NOFOLLOW) on the
+  // entry - a descriptor on the link and the link's own extended attributes, which nothing here
+  // reaches for.
+  //
+  // Neither operation reaches the directory behind the entry, and that is the answer to what the
+  // entry discloses. The kernel matches a resolved path, so an open of /etc as a directory is
+  // checked against /private/etc, which this bootstrap never names: measured at the syscall
+  // boundary, open("/etc", O_RDONLY) is refused and with it every route to the entry names -
+  // opendir/readdir, getdirentries, getattrlistbulk, a shell glob and find - through the spellings
+  // "/etc", "/etc/", "//etc", "/etc/." and "/etc/../etc" alike. "ls /etc/" is refused by the stat
+  // it does first, so its refusal is not evidence about the names on its own, and "ls /etc" exits
+  // zero printing "/etc" because lstat of the link succeeds. /etc/passwd, /etc/master.passwd and
+  // /etc/ssh/sshd_config stay refused through both spellings, and a write under /etc stays refused.
   //
   // /private/etc/resolv.conf is NOT here, and was removed rather than repointed. It is itself a
   // symlink to /private/var/run/resolv.conf, and Seatbelt matches a resolved path, so the entry
@@ -126,7 +139,8 @@ final class SeatbeltProfileGenerator {
   private static final String BOOTSTRAP_ALLOWANCES =
       """
       (allow file-read-data (literal "/") (literal "/dev"))
-      (allow file-read* (literal "/var") (literal "/tmp") (literal "/etc") (subpath "/bin") \
+      (allow file-read-metadata (literal "/var") (literal "/tmp") (literal "/etc"))
+      (allow file-read* (subpath "/bin") \
       (subpath "/usr/bin") (subpath "/usr/lib") \
       (subpath "/usr/share") (subpath "/System/Library") (subpath "/private/var/db/dyld") \
       (subpath "/private/etc/ssl") (literal "/private/etc/hosts") \

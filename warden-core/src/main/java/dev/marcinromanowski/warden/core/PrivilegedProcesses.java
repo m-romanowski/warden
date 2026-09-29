@@ -1,6 +1,7 @@
 package dev.marcinromanowski.warden.core;
 
 import dev.marcinromanowski.warden.api.SandboxEstablishmentException;
+import dev.marcinromanowski.warden.api.SandboxTimeouts;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
@@ -19,19 +20,24 @@ import java.util.concurrent.TimeUnit;
 // parser follows one - so there is no path to hand over.
 final class PrivilegedProcesses {
 
-  private static final Duration COMMAND_TIMEOUT = Duration.ofSeconds(30);
-
   private PrivilegedProcesses() {
   }
 
-  static void run(List<String> command, String standardInput) {
+  static void run(List<String> command, String standardInput, SandboxTimeouts timeouts) {
     List<String> withSudo = new ArrayList<>();
     withSudo.add("sudo");
     withSudo.addAll(Preconditions.nonNull(command, "command"));
     Process process = start(withSudo);
+    // Drained on its own thread, and the input written while that drain runs. Reading to EOF on
+    // this thread blocks until the child exits, which puts the read ahead of the only timeout
+    // there is and makes COMMAND_TIMEOUT unreachable for the hang it exists to bound - measured,
+    // a 929 s privileged command completed without the 30 s limit firing. Draining concurrently
+    // also keeps a child that answers before consuming a 1 MiB body from deadlocking on a full
+    // pipe.
+    PrivilegedCommandOutputDrain drain = PrivilegedCommandOutputDrain.start(process);
     writeInput(process, Preconditions.nonNull(standardInput, "standardInput"));
-    String output = readOutput(process);
-    int exitCode = awaitExit(process, withSudo);
+    int exitCode = awaitExit(process, withSudo, timeouts.privilegedCommand());
+    String output = drain.await(timeouts.privilegedOutputDrain());
     if (exitCode != 0) {
       throw new SandboxEstablishmentException(
           "Privileged command failed (exit=" + exitCode + "): " + withSudo + " output: " + output
@@ -57,22 +63,10 @@ final class PrivilegedProcesses {
     }
   }
 
-  private static String readOutput(Process process) {
-    try {
-      return new String(
-          process.getInputStream()
-              .readAllBytes(),
-          StandardCharsets.UTF_8
-      );
-    } catch (IOException e) {
-      throw new SandboxEstablishmentException("Failed to read privileged command output", e);
-    }
-  }
-
-  private static int awaitExit(Process process, List<String> command) {
+  private static int awaitExit(Process process, List<String> command, Duration commandTimeout) {
     boolean finished;
     try {
-      finished = process.waitFor(COMMAND_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
+      finished = process.waitFor(commandTimeout.toMillis(), TimeUnit.MILLISECONDS);
     } catch (InterruptedException e) {
       Thread.currentThread()
           .interrupt();

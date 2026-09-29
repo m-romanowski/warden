@@ -2,6 +2,7 @@ package dev.marcinromanowski.warden.core;
 
 import dev.marcinromanowski.warden.api.FilesystemRule;
 import dev.marcinromanowski.warden.api.SandboxEstablishmentException;
+import dev.marcinromanowski.warden.api.SandboxTimeouts;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
@@ -52,7 +53,8 @@ final class AppArmorSessionPolicy {
       List<FilesystemRule> filesystemRules,
       AppArmorSessionProfileNames names,
       BwrapSessionPaths sessionPaths,
-      Path helperExecutable
+      Path helperExecutable,
+      SandboxTimeouts timeouts
   ) {
     String body = AppArmorProfileGenerator.sessionProfileBody(
         names.sessionProfile(),
@@ -61,11 +63,11 @@ final class AppArmorSessionPolicy {
         Optional.of(helperExecutable),
         Optional.of(names.stackedLabel())
     );
-    PrivilegedProcesses.run(List.of(POLICY_HELPER.toString(), LOAD_ACTION, names.sessionId()), body);
+    PrivilegedProcesses.run(List.of(POLICY_HELPER.toString(), LOAD_ACTION, names.sessionId()), body, timeouts);
   }
 
-  static void unload(String sessionId) {
-    PrivilegedProcesses.run(List.of(POLICY_HELPER.toString(), UNLOAD_ACTION, sessionId), "");
+  static void unload(String sessionId, SandboxTimeouts timeouts) {
+    PrivilegedProcesses.run(List.of(POLICY_HELPER.toString(), UNLOAD_ACTION, sessionId), "", timeouts);
   }
 
   static void requireInstalled() {

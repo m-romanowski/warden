@@ -2,6 +2,7 @@ package dev.marcinromanowski.warden.core;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import dev.marcinromanowski.warden.api.SandboxTimeouts;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -27,7 +28,7 @@ class BwrapSessionStoreTest {
   void keepsTheSessionSomewhereNoOtherLocalUserCanWrite() throws IOException {
     String sessionId = newSessionId();
 
-    try (BwrapSession session = BwrapSessionStore.open(sessionId, _ -> {})) {
+    try (BwrapSession session = BwrapSessionStore.open(sessionId, _ -> {}, SandboxTimeouts.defaults())) {
       assertThat(modeOf(BwrapSessionStore.SESSIONS_DIRECTORY) & OTHER_WRITE_MODE_BIT)
           .as("the directory holding every session's bwrap copy must not be world-writable, which"
               + " is exactly what java.io.tmpdir is")
@@ -43,7 +44,7 @@ class BwrapSessionStoreTest {
   @Test
   void removesTheSessionPolicyOnCloseEvenWhenNothingEverHeldTheHandleToIt() throws IOException {
     String sessionId = newSessionId();
-    BwrapSession session = BwrapSessionStore.open(sessionId, _ -> {});
+    BwrapSession session = BwrapSessionStore.open(sessionId, _ -> {}, SandboxTimeouts.defaults());
     TestProcesses.run(helperCommand("load", sessionId), "  /** r,\n");
     assertThat(loadedProfileNames())
         .as("the policy has to reach the kernel for this to be testing anything")
@@ -60,7 +61,7 @@ class BwrapSessionStoreTest {
   @Test
   void closesTheSessionWhosePolicyNeverReachedTheKernel() {
     String sessionId = newSessionId();
-    BwrapSession session = BwrapSessionStore.open(sessionId, _ -> {});
+    BwrapSession session = BwrapSessionStore.open(sessionId, _ -> {}, SandboxTimeouts.defaults());
 
     session.close();
 
@@ -123,7 +124,7 @@ class BwrapSessionStoreTest {
       int opened = 0;
       while (System.nanoTime() < deadline) {
         String sessionId = newSessionId();
-        try (BwrapSession session = BwrapSessionStore.open(sessionId, _ -> {})) {
+        try (BwrapSession session = BwrapSessionStore.open(sessionId, _ -> {}, SandboxTimeouts.defaults())) {
           assertThat(session.sessionDirectory())
               .as("a sweep running in another process must not take a live session's files away")
               .isDirectory();

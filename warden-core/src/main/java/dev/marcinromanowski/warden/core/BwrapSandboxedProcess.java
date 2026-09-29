@@ -18,8 +18,6 @@ import java.util.concurrent.TimeUnit;
 // beside an init of bwrap's own at pid 1, so the process this class holds is never the payload.
 final class BwrapSandboxedProcess implements SandboxedProcess {
 
-  private static final Duration GRACEFUL_SHUTDOWN_TIMEOUT = Duration.ofSeconds(5);
-
   private final Process process;
   private final SandboxProxyServer proxy;
   private final Optional<ControlPlaneRelay> controlPlaneRelay;
@@ -108,7 +106,8 @@ final class BwrapSandboxedProcess implements SandboxedProcess {
       return;
     }
     destroy();
-    if (waitFor(GRACEFUL_SHUTDOWN_TIMEOUT)) {
+    if (waitFor(session.timeouts()
+        .gracefulShutdown())) {
       return;
     }
     destroyForcibly();

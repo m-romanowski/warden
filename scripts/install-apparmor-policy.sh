@@ -206,7 +206,12 @@ NAMESPACE_SETUP_ALLOWANCES='  allow file rwlkm /{**,},
 case "\$ACTION" in
   load)
     write_policy
-    "\$PARSER" -r "\$POLICY_FILE"
+    # -K because the parser's write-cache hit test is mtime plus basename, and every session on
+    # this machine writes its policy to a file named "policy" in this helper's own work directory.
+    # A body with an older mtime was measured loading another session's entire policy into the
+    # kernel. The cache is off while /etc/apparmor/parser.conf ships fully commented out, so this
+    # closes the path by policy rather than by an administrator not having uncommented a line.
+    "\$PARSER" -K -r "\$POLICY_FILE"
     ;;
   unload)
     remove_profiles

@@ -35,12 +35,19 @@ final class ControlPlaneRelay implements AutoCloseable {
   private final Path unixDomainSocketPath;
   private final Consumer<String> diagnostics;
   private final Thread acceptThread;
+  private final Duration relayDrainTimeout;
   private volatile boolean closing;
 
-  private ControlPlaneRelay(ServerSocket serverSocket, Path unixDomainSocketPath, Consumer<String> diagnostics) {
+  private ControlPlaneRelay(
+      ServerSocket serverSocket,
+      Path unixDomainSocketPath,
+      Consumer<String> diagnostics,
+      Duration relayDrainTimeout
+  ) {
     this.serverSocket = serverSocket;
     this.unixDomainSocketPath = unixDomainSocketPath;
     this.diagnostics = diagnostics;
+    this.relayDrainTimeout = relayDrainTimeout;
     this.acceptThread = SandboxThreads.namedDaemonThread("warden-sandbox-control-plane-relay-accept", this::acceptLoop);
   }
 
@@ -48,11 +55,16 @@ final class ControlPlaneRelay implements AutoCloseable {
   // instance constructed from it just below, which closes it in close() - not an unmanaged
   // resource, PMD just cannot see the transfer-of-ownership pattern here.
   @SuppressWarnings("PMD.CloseResource")
-  static ControlPlaneRelay start(Path unixDomainSocketPath, Consumer<String> diagnostics) {
+  static ControlPlaneRelay start(Path unixDomainSocketPath, Consumer<String> diagnostics, Duration relayDrainTimeout) {
     Path requiredSocketPath = Preconditions.nonNull(unixDomainSocketPath, "unixDomainSocketPath");
     Consumer<String> requiredDiagnostics = Preconditions.nonNull(diagnostics, "diagnostics");
     ServerSocket serverSocket = bind();
-    ControlPlaneRelay relay = new ControlPlaneRelay(serverSocket, requiredSocketPath, requiredDiagnostics);
+    ControlPlaneRelay relay = new ControlPlaneRelay(
+        serverSocket,
+        requiredSocketPath,
+        requiredDiagnostics,
+        relayDrainTimeout
+    );
     relay.acceptThread.start();
     requiredDiagnostics.accept(
         "control-plane relay started port=" + relay.port() + " unixDomainSocket=" + requiredSocketPath
@@ -130,10 +142,7 @@ final class ControlPlaneRelay implements AutoCloseable {
       // this method's try-with-resources closes both ends, which unblocks the other pump thread's
       // own blocked read via IOException.
       pump(udsIn, tcpOut);
-      toSandbox.join(
-          Duration.ofSeconds(5)
-              .toMillis()
-      );
+      toSandbox.join(relayDrainTimeout.toMillis());
     } catch (IOException e) {
       diagnostics.accept("control-plane relay connection failed: " + e);
     } catch (InterruptedException _) {

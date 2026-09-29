@@ -10,6 +10,9 @@ import dev.marcinromanowski.warden.api.FilesystemRule;
 import dev.marcinromanowski.warden.api.RulePath;
 import dev.marcinromanowski.warden.api.SandboxRuleRejectedException;
 import java.io.IOException;
+import java.net.InetAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -45,8 +48,17 @@ class SeatbeltProfileGeneratorEnforcementTest {
   private static final String BYTE_COUNT_EXECUTABLE = "/usr/bin/wc";
   private static final String TLS_ROOT_STORE = "/private/etc/ssl/cert.pem";
   private static final String SYMLINKED_TLS_ROOT_STORE = "/etc/ssl/cert.pem";
+  private static final String SYMLINKED_SYSTEM_CONFIGURATION = "/etc";
   private static final String STAT_EXECUTABLE = "/usr/bin/stat";
   private static final String SHELL_EXECUTABLE = "/bin/sh";
+  private static final String TLS_CLIENT_EXECUTABLE = "/usr/bin/curl";
+  // curl reports a CA bundle it cannot open as CURLE_SSL_CACERT_BADFILE, before it sends a
+  // ClientHello, and names the path it compiled in while doing so.
+  private static final int CA_BUNDLE_UNREADABLE_EXIT_CODE = 77;
+  // CURLE_SSL_CONNECT_ERROR, which a client only reaches once it has loaded its trust store and
+  // started the handshake. The wording of the message that comes with it depends on whether the
+  // peer's reset arrives before or after the ClientHello, so the code is the stable half.
+  private static final int TLS_HANDSHAKE_STARTED_EXIT_CODE = 35;
   private static final String DEVICE_DIRECTORY = "/dev";
   // Mode 0666, so the filesystem does not refuse it and this profile is the only thing that does.
   // A disk node would not serve: /dev/disk0 is root:operator 0640 and is refused to an ordinary
@@ -90,6 +102,49 @@ class SeatbeltProfileGeneratorEnforcementTest {
           if (reopened >= 0) {
             close(reopened);
           }
+        }
+        return 0;
+      }
+      """;
+  // Reports the four operations that separate file-read-metadata on a root symlink entry from
+  // file-read* on it, and from reaching the directory the entry resolves to. getxattr answers
+  // ENOATTR when it is allowed and the attribute is simply absent, so only EPERM counts as refused.
+  private static final String SYMLINK_ENTRY_PROBE_SOURCE =
+      """
+      #include <stdio.h>
+      #include <errno.h>
+      #include <fcntl.h>
+      #include <unistd.h>
+      #include <sys/xattr.h>
+
+      static const char *outcome(int refused) {
+        return refused ? "refused" : "granted";
+      }
+
+      int main(int argc, char **argv) {
+        const char *path = argc > 1 ? argv[1] : "/etc";
+        char buffer[1024];
+        int descriptor;
+
+        errno = 0;
+        printf("readlink=%s\\n", outcome(readlink(path, buffer, sizeof(buffer)) < 0));
+
+        errno = 0;
+        descriptor = open(path, O_RDONLY | O_SYMLINK);
+        printf("openLink=%s\\n", outcome(descriptor < 0));
+        if (descriptor >= 0) {
+          close(descriptor);
+        }
+
+        errno = 0;
+        getxattr(path, "com.apple.FinderInfo", buffer, sizeof(buffer), 0, XATTR_NOFOLLOW);
+        printf("linkAttributes=%s\\n", outcome(errno == EPERM));
+
+        errno = 0;
+        descriptor = open(path, O_RDONLY);
+        printf("openDirectory=%s\\n", outcome(descriptor < 0));
+        if (descriptor >= 0) {
+          close(descriptor);
         }
         return 0;
       }
@@ -636,6 +691,58 @@ class SeatbeltProfileGeneratorEnforcementTest {
   }
 
   @Test
+  void theEtcSymlinkEntryCarriesMetadataAndNotTheLinksOwnBytes(@TempDir Path tempDirParameter) throws IOException {
+    Path tempDir = tempDirParameter.toRealPath();
+    Path probe = compiledSymlinkEntryProbe(tempDir);
+    List<FilesystemRule> rules = List.of(allowRule(RulePath.literal(probe.toString())));
+
+    SandboxExecResult entry = runSandboxed(tempDir, rules, probe.toString(), SYMLINKED_SYSTEM_CONFIGURATION);
+
+    assertThat(entry.output())
+        .as("resolving the link is the whole reach the entry exists for: %s", entry.output())
+        .contains("readlink=granted");
+    assertThat(entry.output())
+        .as("file-read* would hand out a descriptor on the link itself, and metadata does not: %s",
+            entry.output())
+        .contains("openLink=refused");
+    assertThat(entry.output())
+        .as("nor the link's own extended attributes: %s", entry.output())
+        .contains("linkAttributes=refused");
+    assertThat(entry.output())
+        .as("and the directory the link resolves to is a path this bootstrap never names, so no"
+            + " readdir, getdirentries or getattrlistbulk reaches the names under it: %s", entry.output())
+        .contains("openDirectory=refused");
+  }
+
+  @Test
+  void theEtcSymlinkEntryIsWhatOpensTheTrustStoreEveryTlsClientCompilesIn(
+      @TempDir Path tempDirParameter
+  ) throws IOException {
+    Path tempDir = tempDirParameter.toRealPath();
+    try (ServerSocket acceptor = acceptingAndClosingListener()) {
+      SandboxExecResult handshake = runSandboxedThroughProxyPort(
+          tempDir,
+          List.of(),
+          acceptor.getLocalPort(),
+          TLS_CLIENT_EXECUTABLE, "-sS", "--max-time", "5",
+          "https://localhost:" + acceptor.getLocalPort() + "/"
+      );
+
+      assertThat(handshake.exitCode())
+          .as("the store loads through the symlink spelling the client compiled in, so the request"
+              + " gets as far as a real handshake rather than dying before it: %s", handshake.output())
+          .isNotEqualTo(CA_BUNDLE_UNREADABLE_EXIT_CODE);
+      assertThat(handshake.output())
+          .as("and the failure that remains is the peer's, not the trust store's: %s", handshake.output())
+          .doesNotContain("error setting certificate verify locations");
+      assertThat(handshake.exitCode())
+          .as("what is left is a handshake that started and found nothing speaking TLS: %s",
+              handshake.output())
+          .isEqualTo(TLS_HANDSHAKE_STARTED_EXIT_CODE);
+    }
+  }
+
+  @Test
   void grantingTheSymlinkEntryDoesNotReachWhatItPointsAt(@TempDir Path tempDirParameter) throws IOException {
     Path tempDir = tempDirParameter.toRealPath();
     Path behind = Files.createDirectory(tempDir.resolve("behind"));
@@ -696,6 +803,30 @@ class SeatbeltProfileGeneratorEnforcementTest {
         "a C compiler is required to build " + name + ": " + compilation.output()
     );
     return binary;
+  }
+
+  private static Path compiledSymlinkEntryProbe(Path directory) throws IOException {
+    return compiledProbe(directory, "symlink-entry-probe", SYMLINK_ENTRY_PROBE_SOURCE);
+  }
+
+  // A backlog of one and a thread that accepts and immediately closes: enough for the client's
+  // connect() to complete and its TLS handshake to begin, which is the point the trust store is
+  // read. Nothing here speaks TLS, and nothing needs to.
+  private static ServerSocket acceptingAndClosingListener() throws IOException {
+    ServerSocket acceptor = new ServerSocket(0, 1, InetAddress.getLoopbackAddress());
+    Thread accepting = new Thread(() -> {
+      while (!acceptor.isClosed()) {
+        try {
+          Socket accepted = acceptor.accept();
+          accepted.close();
+        } catch (IOException _) {
+          return;
+        }
+      }
+    });
+    accepting.setDaemon(true);
+    accepting.start();
+    return acceptor;
   }
 
   private static Path compiledNativeBinary(Path directory) throws IOException {
@@ -774,10 +905,28 @@ class SeatbeltProfileGeneratorEnforcementTest {
       List<FilesystemRule> rules,
       String extraClauses
   ) throws IOException {
-    String profile = SeatbeltProfileGenerator.generate(rules, PROXY_PORT, Optional.empty());
+    return writtenProfile(tempDir, rules, extraClauses, PROXY_PORT);
+  }
+
+  private static Path writtenProfile(
+      Path tempDir,
+      List<FilesystemRule> rules,
+      String extraClauses,
+      int proxyPort
+  ) throws IOException {
+    String profile = SeatbeltProfileGenerator.generate(rules, proxyPort, Optional.empty());
     Path profilePath = tempDir.resolve("profile-" + UUID.randomUUID() + ".sb");
     Files.writeString(profilePath, profile + extraClauses);
     return profilePath;
+  }
+
+  private static SandboxExecResult runSandboxedThroughProxyPort(
+      Path tempDir,
+      List<FilesystemRule> rules,
+      int proxyPort,
+      String... command
+  ) throws IOException {
+    return sandboxed(writtenProfile(tempDir, rules, "", proxyPort), command);
   }
 
   private static SandboxExecResult runSandboxed(
@@ -785,7 +934,10 @@ class SeatbeltProfileGeneratorEnforcementTest {
       List<FilesystemRule> rules,
       String... command
   ) throws IOException {
-    Path profilePath = writtenProfile(tempDir, rules);
+    return sandboxed(writtenProfile(tempDir, rules), command);
+  }
+
+  private static SandboxExecResult sandboxed(Path profilePath, String... command) throws IOException {
     List<String> fullCommand = new ArrayList<>();
     fullCommand.add("/usr/bin/sandbox-exec");
     fullCommand.add("-f");
